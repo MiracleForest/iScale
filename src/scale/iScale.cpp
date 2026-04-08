@@ -1,10 +1,12 @@
 #include "scale/iScale.h"
+#include "iScale.h"
 #include <ll/api/memory/Hook.h>
 #include <ll/api/mod/RegisterHelper.h>
 #include <mc/deps/ecs/gamerefs_entity/EntityRegistry.h>
 #include <mc/deps/ecs/strict/StrictEntityContext.h>
 #include <mc/deps/vanilla_components/AABBShapeComponent.h>
 #include <mc/deps/vanilla_components/ActorDataBoundingBoxComponent.h>
+#include <mc/deps/vanilla_components/ActorDataDirtyFlagsComponent.h>
 #include <mc/deps/vanilla_components/ActorDataFlagComponent.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
 #include <mc/entity/components/ActorOwnerComponent.h>
@@ -12,7 +14,9 @@
 #include <mc/entity/components/VanillaOffsetComponent.h>
 #include <mc/entity/systems/VanillaOffsetSystem.h>
 #include <mc/entity/systems/auto_step_system/AutoStepSystem.h>
+#include <mc/nbt/CompoundTagVariant.h>
 #include <mc/util/VanillaOffsetSystemUtil.h>
+#include <mc/world/actor/player/Player.h>
 
 class EntityModifierBase {
 public:
@@ -22,7 +26,7 @@ template <>
 class EntityModifier<HasAutoSteppedComponent> : public EntityModifierBase {};
 
 namespace mif::scale {
-    
+
 using namespace ll::memory_literals;
 
 LL_TYPE_INSTANCE_HOOK(
@@ -71,8 +75,8 @@ LL_TYPE_INSTANCE_HOOK(
     // clang-format on
 }
 
-LL_AUTO_STATIC_HOOK(
-    TestHook,
+LL_STATIC_HOOK(
+    iScale::AutoStepHook,
     HookPriority::Normal,
     // &AutoStepSystem::doAutoStepSystemImpl,
     "48 8B C4 48 89 58 ?? 48 89 70 ?? 55 57 41 54 41 56 41 57 48 8D 68 ?? 48 81 EC ?? ?? ?? ?? 0F 29 70 ?? 0F 29 78 ?? 44 0F 29 40 ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 49 8B F9"_sig,
@@ -111,6 +115,51 @@ LL_AUTO_STATIC_HOOK(
     if (aabb.min.y > aabb.max.y) std::swap(aabb.min.y, aabb.max.y);
 }
 
+LL_TYPE_INSTANCE_HOOK(
+    iScale::ActorLoadHook,
+    HookPriority::Low,
+    Actor,
+    &Actor::$load,
+    bool,
+    CompoundTag const& tag,
+    DataLoadHelper&    dataLoadHelper
+) {
+    if (auto result = origin(tag, dataLoadHelper); result) {
+        if (tag.contains("Scale", Tag::Type::Float)) {
+            auto scale = static_cast<float>(tag["Scale"]);
+            setBoundingBox(*this, scale);
+            getInstance().mScales.emplace(this, scale);
+        }
+        return true;
+    }
+    return false;
+}
+
+LL_TYPE_INSTANCE_HOOK(iScale::ActorSaveHook, HookPriority::Low, Actor, &Actor::save, bool, CompoundTag& entityTag) {
+    if (auto result = origin(entityTag); result) {
+        entityTag["Scale"] = getBoundingBox(*this);
+        return true;
+    }
+    return false;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    iScale::ActorInitComponentHook,
+    HookPriority::Low,
+    Actor,
+    &Actor::$initializeComponents,
+    void,
+    ActorInitializationMethod   method,
+    VariantParameterList const& params
+) {
+    origin(method, params);
+    auto& scales = getInstance().mScales;
+    if (auto it = scales.find(this); it != scales.end()) {
+        setBoundingBox(*this, it->second);
+        scales.erase(it);
+    }
+}
+
 iScale& iScale::getInstance() {
     static iScale instance;
     return instance;
@@ -119,15 +168,30 @@ iScale& iScale::getInstance() {
 bool iScale::load() { return true; }
 
 bool iScale::enable() {
-    ll::memory::HookRegistrar<GetCameraOffsetHook>::hook();
+    Hooks::hook();
     return true;
 }
 
 bool iScale::disable() { return true; }
 
 bool iScale::unload() {
-    ll::memory::HookRegistrar<GetCameraOffsetHook>::unhook();
+    Hooks::unhook();
     return true;
+}
+
+void iScale::setBoundingBox(Actor& entity, float scale) {
+    entity.mEntityContext->getOrAddComponent<ActorDataBoundingBoxComponent>().mValue[0] = scale;
+    entity.mEntityContext->getOrAddComponent<ActorDataDirtyFlagsComponent>().mDirtyFlags->set(
+        std::to_underlying(ActorFlags::ShowBottom),
+        true
+    );
+}
+
+float iScale::getBoundingBox(Actor& entity) {
+    return entity.mEntityContext->tryGetComponent<ActorDataBoundingBoxComponent>()
+        .transform([](auto&& component) {
+        return component.mValue[0];
+    }).value_or(1.0f);
 }
 
 LL_REGISTER_MOD(iScale, iScale::getInstance());
