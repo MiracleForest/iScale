@@ -6,19 +6,15 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        target_type:
-          - server
-          - client
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: xmake-io/github-action-setup-xmake@v1
-        # with:
-        #   xmake-version: branch@master
+      - name: Setup XMake
+        uses: xmake-io/github-action-setup-xmake@v1
 
-      - uses: actions/cache@v5
+      - name: Cache XMake
+        uses: actions/cache@v4
         with:
           path: |
             ~/AppData/Local/.xmake
@@ -26,32 +22,48 @@ jobs:
           restore-keys: |
             xmake-
 
-      - run: |
+      - name: Configure and Build
+        run: |
           xmake repo -u
+          xmake c -a
+          xmake f -a x64 -m release -p windows -v -y
+          xmake -v -y
 
-      - run: |
-          xmake f -a x64 -m release -p windows --target_type=${{ matrix.target_type }} -y
-
-      - run: |
-          xmake -w -y
-
-      - uses: actions/upload-artifact@v7
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-windows-x64
+          name: ${{ github.event.repository.name }}-windows-x64-${{ github.sha }}
           path: |
-            bin/
+            bin/DLL
+      
+      - name: Upload PDB
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-windows-x64-PDB
+          path: |
+            bin/PDB
+
+      - name: Upload SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-SDK
+          path: |
+            bin/SDK
 
   update-release-notes:
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - id: extract-release-notes
-        uses: ffurrer2/extract-release-notes@v3
+      - name: Update Changelog
+        id: extract-release-notes
+        uses: ffurrer2/extract-release-notes@v2
 
-      - uses: softprops/action-gh-release@v2
+      - name: Update Release Notes
+        uses: softprops/action-gh-release@v1
         with:
           body: |
             ${{ steps.extract-release-notes.outputs.release_notes }}
@@ -62,28 +74,52 @@ jobs:
       - update-release-notes
     permissions:
       contents: write
-    strategy:
-      matrix:
-        target_type:
-          - server
-          - client
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v8
+      - name: Download DLL
+        uses: actions/download-artifact@v4
         with:
-          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-windows-x64
-          path: artifact
+          name: ${{ github.event.repository.name }}-windows-x64-${{ github.sha }}
+          path: artifact/DLL
 
-      - run: |
-          cp CHANGELOG.md LICENSE README.md artifact/
+      - name: Download PDB
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-windows-x64-PDB
+          path: artifact/PDB
 
-      - run: |
-          zip -r ../${{ github.event.repository.name }}-${{ matrix.target_type }}-windows-x64.zip *
-        working-directory: artifact
+      - name: Download SDK
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-SDK
+          path: artifact/SDK
 
-      - uses: softprops/action-gh-release@v2
+      - name: Copy Files
+        run: |
+          cp CHANGELOG.md artifact/DLL
+
+      - name: Zip DLL
+        run: |
+          zip -r ../../${{ github.event.repository.name }}-windows-x64.zip *
+        working-directory: artifact/DLL
+      
+      - name: Zip PDB
+        run: |
+          zip -r ../../${{ github.event.repository.name }}-windows-x64-PDB.zip *
+        working-directory: artifact/PDB
+      
+      - name: Zip SDK
+        run: |
+          zip -r ../../${{ github.event.repository.name }}-SDK.zip *
+        working-directory: artifact/SDK
+      
+      - name: Upload Files
+        uses: softprops/action-gh-release@v1
         with:
           files: |
-            ${{ github.event.repository.name }}-${{ matrix.target_type }}-windows-x64.zip
+            ${{ github.event.repository.name }}-windows-x64.zip
+            ${{ github.event.repository.name }}-windows-x64-PDB.zip
+            ${{ github.event.repository.name }}-SDK.zip
