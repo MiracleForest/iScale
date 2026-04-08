@@ -23,6 +23,7 @@
 #include <mc/server/commands/CommandOutput.h>
 #include <mc/util/VanillaOffsetSystemUtil.h>
 #include <mc/world/actor/player/Player.h>
+#include <utility>
 
 class EntityModifierBase {
 public:
@@ -75,7 +76,7 @@ LL_TYPE_INSTANCE_HOOK(
         // 然后减去原本就会偏移的y轴坐标 得到实际偏移量
         // 为什么是 = 不是 += 或 -= 呢？问mj去，史山代码
         registry->get<VanillaOffsetComponent>(entityId).mCurrentOffset->y = -(
-            offset * registry->get<ActorDataBoundingBoxComponent>(entityId).mValue[0] - offset
+            offset * registry->get<ActorDataBoundingBoxComponent>(entityId).mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)] - offset
         );
     }
     // clang-format on
@@ -111,7 +112,7 @@ LL_STATIC_HOOK(
 
     auto& aabb     = *aabbShapeComponent.mAABB;
     auto  center   = (aabb.min + aabb.max) * 0.5f;
-    auto  halfSize = (aabb.max - aabb.min) * 0.5f * scaleComponent->mValue[0];
+    auto  halfSize = (aabb.max - aabb.min) * 0.5f * scaleComponent->mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)];
     // clang-format off
     aabb = AABB{
         { center.x - halfSize.x, aabb.min.y, center.z - halfSize.z },
@@ -217,7 +218,8 @@ bool iScale::unload() {
 }
 
 void iScale::setScale(Actor& entity, float scale) {
-    entity.mEntityContext->getOrAddComponent<ActorDataBoundingBoxComponent>().mValue[0] = scale;
+    entity.mEntityContext->getOrAddComponent<ActorDataBoundingBoxComponent>()
+        .mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)] = scale;
     entity.mEntityContext->getOrAddComponent<ActorDataDirtyFlagsComponent>().mDirtyFlags->set(
         std::to_underlying(ActorFlags::ShowBottom),
         true
