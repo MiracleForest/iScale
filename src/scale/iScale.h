@@ -29,8 +29,8 @@ public:
     bool disable();
     bool unload();
 
-    static void  setBoundingBox(Actor& entity, float scale);
-    static float getBoundingBox(Actor& entity);
+    static void  setScale(Actor& entity, float scale);
+    static float getScale(Actor& entity);
 
 private:
     ll::mod::NativeMod&              mSelf;

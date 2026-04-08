@@ -1,6 +1,9 @@
 #include "scale/iScale.h"
-#include "ll/api/command/runtime/ParamKind.h"
-#include "ll/api/command/runtime/RuntimeCommand.h"
+#include <ll/api/command/CommandHandle.h>
+#include <ll/api/command/CommandRegistrar.h>
+#include <ll/api/command/runtime/RuntimeOverload.h>
+#include <ll/api/event/EventBus.h>
+#include <ll/api/event/server/ServerStartedEvent.h>
 #include <ll/api/memory/Hook.h>
 #include <ll/api/mod/RegisterHelper.h>
 #include <mc/deps/ecs/gamerefs_entity/EntityRegistry.h>
@@ -9,20 +12,15 @@
 #include <mc/deps/vanilla_components/ActorDataBoundingBoxComponent.h>
 #include <mc/deps/vanilla_components/ActorDataDirtyFlagsComponent.h>
 #include <mc/deps/vanilla_components/ActorDataFlagComponent.h>
-#include <ll/api/event/EventBus.h>
-#include <ll/api/event/server/ServerStartedEvent.h>
-#include <ll/api/command/CommandRegistrar.h>
-#include <ll/api/command/runtime/RuntimeOverload.h>
-#include <ll/api/command/CommandHandle.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
 #include <mc/entity/components/ActorOwnerComponent.h>
 #include <mc/entity/components/IsHorizontalPoseFlagComponent.h>
-#include <mc/server/commands/CommandOutput.h>
-#include <mc/server/commands/CommandOrigin.h>
 #include <mc/entity/components/VanillaOffsetComponent.h>
 #include <mc/entity/systems/VanillaOffsetSystem.h>
 #include <mc/entity/systems/auto_step_system/AutoStepSystem.h>
 #include <mc/nbt/CompoundTagVariant.h>
+#include <mc/server/commands/CommandOrigin.h>
+#include <mc/server/commands/CommandOutput.h>
 #include <mc/util/VanillaOffsetSystemUtil.h>
 #include <mc/world/actor/player/Player.h>
 
@@ -135,7 +133,7 @@ LL_TYPE_INSTANCE_HOOK(
     if (auto result = origin(tag, dataLoadHelper); result) {
         if (tag.contains("Scale", Tag::Type::Float)) {
             auto scale = static_cast<float>(tag["Scale"]);
-            setBoundingBox(*this, scale);
+            setScale(*this, scale);
             getInstance().mScales.emplace(this, scale);
         }
         return true;
@@ -145,7 +143,7 @@ LL_TYPE_INSTANCE_HOOK(
 
 LL_TYPE_INSTANCE_HOOK(iScale::ActorSaveHook, HookPriority::Low, Actor, &Actor::save, bool, CompoundTag& entityTag) {
     if (auto result = origin(entityTag); result) {
-        entityTag["Scale"] = getBoundingBox(*this);
+        entityTag["Scale"] = getScale(*this);
         return true;
     }
     return false;
@@ -163,7 +161,7 @@ LL_TYPE_INSTANCE_HOOK(
     origin(method, params);
     auto& scales = getInstance().mScales;
     if (auto it = scales.find(this); it != scales.end()) {
-        setBoundingBox(*this, it->second);
+        setScale(*this, it->second);
         scales.erase(it);
     }
 }
@@ -188,14 +186,14 @@ bool iScale::load() {
                 std::vector<std::string> names;
                 auto                     scale = self["scale"].get<ll::command::ParamKind::Float>();
                 for (auto* target : targets) {
-                    setBoundingBox(*target, scale);
+                    setScale(*target, scale);
                     names.push_back(target->getRealName());
                 }
                 output.success("已将 {0} 的缩放设置为 {1}", fmt::join(names, ", "), scale);
             } else { // get
                 ll::SmallDenseMap<float, std::vector<std::string>> scaleToNames;
                 for (auto* target : targets) {
-                    scaleToNames[getBoundingBox(*target)].push_back(target->getRealName());
+                    scaleToNames[getScale(*target)].push_back(target->getRealName());
                 }
                 for (auto& [scale, names] : scaleToNames) {
                     output.success("{0} 的缩放为 {1}", fmt::join(names, ", "), scale);
@@ -218,7 +216,7 @@ bool iScale::unload() {
     return true;
 }
 
-void iScale::setBoundingBox(Actor& entity, float scale) {
+void iScale::setScale(Actor& entity, float scale) {
     entity.mEntityContext->getOrAddComponent<ActorDataBoundingBoxComponent>().mValue[0] = scale;
     entity.mEntityContext->getOrAddComponent<ActorDataDirtyFlagsComponent>().mDirtyFlags->set(
         std::to_underlying(ActorFlags::ShowBottom),
@@ -226,7 +224,7 @@ void iScale::setBoundingBox(Actor& entity, float scale) {
     );
 }
 
-float iScale::getBoundingBox(Actor& entity) {
+float iScale::getScale(Actor& entity) {
     return entity.mEntityContext->tryGetComponent<ActorDataBoundingBoxComponent>()
         .transform([](auto&& component) {
         return component.mValue[0];
