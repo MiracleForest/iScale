@@ -1,5 +1,6 @@
 #include "scale/iScale.h"
-#include "iScale.h"
+#include "ll/api/command/runtime/ParamKind.h"
+#include "ll/api/command/runtime/RuntimeCommand.h"
 #include <ll/api/memory/Hook.h>
 #include <ll/api/mod/RegisterHelper.h>
 #include <mc/deps/ecs/gamerefs_entity/EntityRegistry.h>
@@ -8,9 +9,16 @@
 #include <mc/deps/vanilla_components/ActorDataBoundingBoxComponent.h>
 #include <mc/deps/vanilla_components/ActorDataDirtyFlagsComponent.h>
 #include <mc/deps/vanilla_components/ActorDataFlagComponent.h>
+#include <ll/api/event/EventBus.h>
+#include <ll/api/event/server/ServerStartedEvent.h>
+#include <ll/api/command/CommandRegistrar.h>
+#include <ll/api/command/runtime/RuntimeOverload.h>
+#include <ll/api/command/CommandHandle.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
 #include <mc/entity/components/ActorOwnerComponent.h>
 #include <mc/entity/components/IsHorizontalPoseFlagComponent.h>
+#include <mc/server/commands/CommandOutput.h>
+#include <mc/server/commands/CommandOrigin.h>
 #include <mc/entity/components/VanillaOffsetComponent.h>
 #include <mc/entity/systems/VanillaOffsetSystem.h>
 #include <mc/entity/systems/auto_step_system/AutoStepSystem.h>
@@ -165,7 +173,38 @@ iScale& iScale::getInstance() {
     return instance;
 }
 
-bool iScale::load() { return true; }
+bool iScale::load() {
+    ll::event::EventBus::getInstance().emplaceListener<ll::event::ServerStartedEvent>([](auto&) {
+        ll::command::CommandRegistrar::getInstance(false)
+            .getOrCreateCommand("scale", "缩放玩家大小", CommandPermissionLevel::GameDirectors)
+            .runtimeOverload()
+            .required("target", ll::command::ParamKind::Player)
+            .optional("scale", ll::command::ParamKind::Float)
+            .execute([](CommandOrigin const& origin, CommandOutput& output, ll::command::RuntimeCommand const& self) {
+            auto targets = self["target"].get<ll::command::ParamKind::Player>().results(origin);
+            if (targets.empty()) return output.error("没有指定玩家");
+
+            if (self["scale"].has_value()) { // set
+                std::vector<std::string> names;
+                auto                     scale = self["scale"].get<ll::command::ParamKind::Float>();
+                for (auto* target : targets) {
+                    setBoundingBox(*target, scale);
+                    names.push_back(target->getRealName());
+                }
+                output.success("已将 {0} 的缩放设置为 {1}", fmt::join(names, ", "), scale);
+            } else { // get
+                ll::SmallDenseMap<float, std::vector<std::string>> scaleToNames;
+                for (auto* target : targets) {
+                    scaleToNames[getBoundingBox(*target)].push_back(target->getRealName());
+                }
+                for (auto& [scale, names] : scaleToNames) {
+                    output.success("{0} 的缩放为 {1}", fmt::join(names, ", "), scale);
+                }
+            }
+        });
+    });
+    return true;
+}
 
 bool iScale::enable() {
     Hooks::hook();
