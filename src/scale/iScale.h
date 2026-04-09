@@ -16,9 +16,15 @@ public:
     struct ActorSaveHook;
     struct ActorInitComponentHook;
     struct TickBoundingBoxHook;
+    struct MobJumpHook;
 
-    using Hooks = ll::memory::
-        HookRegistrar<TickCameraOffsetHook, ActorLoadHook, ActorSaveHook, ActorInitComponentHook, TickBoundingBoxHook>;
+    using Hooks = ll::memory::HookRegistrar<
+        TickCameraOffsetHook,
+        ActorLoadHook,
+        ActorSaveHook,
+        ActorInitComponentHook,
+        TickBoundingBoxHook,
+        MobJumpHook>;
 
 public:
     static iScale& getInstance();

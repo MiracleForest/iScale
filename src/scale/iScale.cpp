@@ -1,4 +1,5 @@
 #include "scale/iScale.h"
+#include <ll/api/Versions.h>
 #include <ll/api/command/CommandHandle.h>
 #include <ll/api/command/CommandRegistrar.h>
 #include <ll/api/command/runtime/RuntimeOverload.h>
@@ -14,18 +15,35 @@
 #include <mc/deps/vanilla_components/OffsetsComponent.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
 #include <mc/entity/components/IsHorizontalPoseFlagComponent.h>
+#include <mc/entity/components/MobEffectsComponent.h>
+#include <mc/entity/components/MobJumpComponent.h>
 #include <mc/entity/components/PlayerInputRequestComponent.h>
+#include <mc/entity/components/TriggerJumpRequestComponent.h>
 #include <mc/entity/components/VanillaOffsetComponent.h>
+#include <mc/entity/components_json_legacy/JumpControlComponent.h>
 #include <mc/entity/systems/PlayerBoundingBoxStateUpdateSystem.h>
 #include <mc/entity/systems/VanillaOffsetSystem.h>
+#include <mc/entity/systems/mob_jump_from_ground_system_impl/MobJumpFromGroundSystemImpl.h>
 #include <mc/entity/utilities/GetAttachPositionUtility.h>
+#include <mc/entity/utilities/JumpPreventionResult.h>
+#include <mc/entity/utilities/JumpPreventionUtility.h>
 #include <mc/nbt/CompoundTagVariant.h>
 #include <mc/server/commands/CommandOrigin.h>
 #include <mc/server/commands/CommandOutput.h>
 #include <mc/util/VanillaOffsetSystemUtil.h>
+#include <mc/world/actor/ai/control/JumpControl.h>
 #include <mc/world/actor/player/Player.h>
+#include <mc/world/effect/MobEffect.h>
+#include <mc/world/effect/MobEffectInstance.h>
 #include <mc/world/level/BlockSource.h>
 #include <mc/world/level/material/Material.h>
+
+JumpPreventionResult::JumpPreventionResult() : mUnk146500(), mUnk3d2bc6() {
+    mUnk146500.as<bool>()     = false;
+    mUnk3d2bc6.as<BlockPos>() = {};
+}
+JumpPreventionResult::JumpPreventionResult(JumpPreventionResult const&)            = default;
+JumpPreventionResult& JumpPreventionResult::operator=(JumpPreventionResult const&) = default;
 
 namespace mif::scale {
 
@@ -36,7 +54,7 @@ LL_TYPE_INSTANCE_HOOK(
     iScale::TickCameraOffsetHook,
     HookPriority::Normal,
     VanillaOffsetSystem,
-    // VanillaOffsetSystem::tick
+    // &VanillaOffsetSystem::$tick
     "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 41 56 41 57 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? 48 8B DA"_sig,
     void,
     StrictExecutionContext<
@@ -143,7 +161,7 @@ LL_TYPE_INSTANCE_HOOK(
 // 修复自动爬行/潜行
 LL_TYPE_STATIC_HOOK(
     iScale::TickBoundingBoxHook,
-    HookPriority::Normal,
+    HookPriority::Low,
     PlayerBoundingBoxStateUpdateSystem,
     // &PlayerBoundingBoxStateUpdateSystem::tickPlayerBoundingBoxStateUpdateSystem,
     "48 8B C4 48 89 58 ?? 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 ?? 48 81 EC ?? ?? ?? ?? 0F 29 70 ?? 0F 29 78 ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 4D 8B F0 4C 8B E2"_sig,
@@ -238,8 +256,11 @@ LL_TYPE_STATIC_HOOK(
 
     struct CollisionProxy {
     public:
-        uintptr_t           mVTable{reinterpret_cast<uintptr_t>(ll::sys_utils::getImageRange().data()) + 0x845EA88};
-        StrictEntityContext mEntity;
+        uintptr_t mVTable{
+            reinterpret_cast<uintptr_t>(ll::sys_utils::getImageRange().data())
+            + (ll::isClient() ? 0x845EA88 : 0x5D74FA8)
+        };
+        StrictEntityContext         mEntity;
         decltype(&executionContext) mExecutionContext;
 
     public:
@@ -277,6 +298,76 @@ LL_TYPE_STATIC_HOOK(
             request.mUnblockedToCrawl = false;
         }
     }
+}
+
+// 跳跃高度修改
+LL_STATIC_HOOK(
+    iScale::MobJumpHook,
+    HookPriority::Normal,
+    // &MobJumpFromGroundSystemImpl::mobJumpFromGround,
+    "48 89 5C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 55 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 48 8B 7D"_sig,
+    void,
+    StrictEntityContext const&                   entity,
+    AABBShapeComponent const&                    aabbShapeComponent,
+    ActorDataFlagComponent const&                actorDataFlagComponent,
+    ActorRotationComponent const&                actorRotationComponent,
+    MobEffectsComponent const&                   mobEffectsComponent,
+    JumpControlComponent const*                  jumpControlComponent,
+    MobJumpComponent&                            mobJumpComponent,
+    StateVectorComponent&                        stateVectorComponent,
+    EntityModifier<TriggerJumpRequestComponent>& modifier,
+    IConstBlockSource const&                     region,
+    bool                                         isSquid
+) {
+    // 记录起跳起始位置
+    mobJumpComponent.mJumpStartPos = stateVectorComponent.mPos;
+
+    // clang-format off
+    auto preventionResult = reinterpret_cast<decltype(&JumpPreventionUtility::getJumpPrevention)>(
+        "48 89 5C 24 ?? 48 89 6C 24 ?? 56 57 41 56 48 83 EC ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 ?? 48 8B B4 24 ?? ?? ?? ?? 49 8B F9"_sig.resolve()
+    )(
+        true,
+        *aabbShapeComponent.mAABB,
+        *stateVectorComponent.mPos,
+        region
+    );
+    // clang-format on
+
+    auto jumpPower = [&]() {
+        if (isSquid) return 0.2f;
+        if (jumpControlComponent && jumpControlComponent->mJumpControl) {
+            return jumpControlComponent->mJumpControl->getJumpPower(*jumpControlComponent);
+        }
+        return 0.42f;
+    }();
+    auto effectAmplifier = [&]() {
+        auto* mobEFfect = MobEffect::JUMP();
+        if (mobEffectsComponent.mMobEffects->size() > mobEFfect->mId) {
+            auto& mobEffectInstance = (*mobEffectsComponent.mMobEffects)[mobEFfect->mId];
+            if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
+                return (static_cast<float>(mobEffectInstance.mAmplifier) + 1.0f) * 0.1f;
+            }
+        }
+        return 0.0f;
+    }();
+
+    auto newVerticalSpeed =
+        (preventionResult.mUnk146500.as<bool>() ? 0.6f : 1.0f) * (effectAmplifier + jumpPower)
+        * getScale(*ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)->mRegistry, entity.mEntity);
+
+    if (newVerticalSpeed > stateVectorComponent.mPosDelta->y) {
+        stateVectorComponent.mPosDelta->y = newVerticalSpeed;
+    }
+
+    if (actorDataFlagComponent.mValue.test(std::to_underlying(ActorFlags::Sprinting))) {
+        auto yawRad = actorRotationComponent.mRotationDegree->y * 0.017453292f;
+
+        stateVectorComponent.mPosDelta->x -= std::sin(yawRad) * 0.2f;
+        stateVectorComponent.mPosDelta->z += std::cos(yawRad) * 0.2f;
+    }
+
+    (void)ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)
+        ->mRegistry->get_or_emplace<TriggerJumpRequestComponent>(entity.mEntity, preventionResult);
 }
 
 iScale& iScale::getInstance() {
