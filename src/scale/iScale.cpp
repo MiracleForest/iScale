@@ -1,4 +1,5 @@
 #include "scale/iScale.h"
+#include "mc/world/actor/ActorFlags.h"
 #include <ll/api/Versions.h>
 #include <ll/api/command/CommandHandle.h>
 #include <ll/api/command/CommandRegistrar.h>
@@ -15,8 +16,11 @@
 #include <mc/deps/vanilla_components/OffsetsComponent.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
 #include <mc/entity/components/IsHorizontalPoseFlagComponent.h>
+#include <ll/api/service/Bedrock.h>
+#include <mc/world/Minecraft.h>
 #include <mc/entity/components/MobEffectsComponent.h>
 #include <mc/entity/components/MobJumpComponent.h>
+#include <mc/entity/components/FallDistanceComponent.h>
 #include <mc/entity/components/PlayerInputRequestComponent.h>
 #include <mc/entity/components/TriggerJumpRequestComponent.h>
 #include <mc/entity/components/VanillaOffsetComponent.h>
@@ -30,6 +34,7 @@
 #include <mc/nbt/CompoundTagVariant.h>
 #include <mc/server/commands/CommandOrigin.h>
 #include <mc/server/commands/CommandOutput.h>
+#include <mc/entity/systems/movement/mob/MobMovementGravity.h>
 #include <mc/util/VanillaOffsetSystemUtil.h>
 #include <mc/world/actor/ai/control/JumpControl.h>
 #include <mc/world/actor/player/Player.h>
@@ -368,6 +373,44 @@ LL_STATIC_HOOK(
 
     (void)ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)
         ->mRegistry->get_or_emplace<TriggerJumpRequestComponent>(entity.mEntity, preventionResult);
+}
+
+LL_STATIC_HOOK(
+    iScale::TickAirGravityHook,
+    HookPriority::Normal,
+    // &MobMovementGravity::tickAirGravity,
+    "48 8B 4A ?? F6 C1"_sig,
+    void,
+    StrictEntityContext const&    context,
+    ActorDataFlagComponent const& synchedActorData,
+    MobEffectsComponent const&    mobEffects,
+    StateVectorComponent&         stateVector,
+    FallDistanceComponent&        fallDistance
+) {
+    auto scale = getScale(*ll::service::getMinecraft(false)->mEntityRegistry->get()->mRegistry, context.mEntity);
+    std::cout << scale << std::endl;
+    auto hasGlidingOrSwimming = synchedActorData.getStatusFlag(ActorFlags::InScaffolding)
+                             || synchedActorData.getStatusFlag(ActorFlags::OverScaffolding);
+    auto hasGravity    = synchedActorData.getStatusFlag(ActorFlags::HasGravity);
+    auto hasExtraFlag = synchedActorData.getStatusFlag(ActorFlags::DescendThroughBlock);
+
+    if (hasGravity && (!hasGlidingOrSwimming || !hasExtraFlag)) {
+        if (stateVector.mPosDelta->y < 0.0f && [&]() {
+            auto* mobEFfect = MobEffect::SLOW_FALLING();
+            if (mobEffects.mMobEffects->size() > mobEFfect->mId) {
+                auto& mobEffectInstance = (*mobEffects.mMobEffects)[mobEFfect->mId];
+                if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
+                    return true;
+                }
+            }
+            return false;
+        }()) {
+            stateVector.mPosDelta->y -= 0.01f * scale;
+            fallDistance.mValue       = 0.0f;
+        } else {
+            stateVector.mPosDelta->y -= 0.08f * scale;
+        }
+    }
 }
 
 iScale& iScale::getInstance() {
