@@ -1,5 +1,6 @@
 #include "scale/iScale.h"
 #include "mc/world/actor/ActorFlags.h"
+#include <cmath>
 #include <ll/api/Versions.h>
 #include <ll/api/command/CommandHandle.h>
 #include <ll/api/command/CommandRegistrar.h>
@@ -7,6 +8,7 @@
 #include <ll/api/event/EventBus.h>
 #include <ll/api/event/server/ServerStartedEvent.h>
 #include <ll/api/mod/RegisterHelper.h>
+#include <ll/api/service/Bedrock.h>
 #include <mc/deps/ecs/gamerefs_entity/EntityRegistry.h>
 #include <mc/deps/ecs/strict/StrictEntityContext.h>
 #include <mc/deps/vanilla_components/AABBShapeComponent.h>
@@ -15,27 +17,27 @@
 #include <mc/deps/vanilla_components/ActorDataFlagComponent.h>
 #include <mc/deps/vanilla_components/OffsetsComponent.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
+#include <mc/entity/components/FallDistanceComponent.h>
 #include <mc/entity/components/IsHorizontalPoseFlagComponent.h>
-#include <ll/api/service/Bedrock.h>
-#include <mc/world/Minecraft.h>
 #include <mc/entity/components/MobEffectsComponent.h>
 #include <mc/entity/components/MobJumpComponent.h>
-#include <mc/entity/components/FallDistanceComponent.h>
 #include <mc/entity/components/PlayerInputRequestComponent.h>
+#include <mc/entity/components/ShouldUpdateBoundingBoxRequestComponent.h>
 #include <mc/entity/components/TriggerJumpRequestComponent.h>
 #include <mc/entity/components/VanillaOffsetComponent.h>
 #include <mc/entity/components_json_legacy/JumpControlComponent.h>
 #include <mc/entity/systems/PlayerBoundingBoxStateUpdateSystem.h>
 #include <mc/entity/systems/VanillaOffsetSystem.h>
 #include <mc/entity/systems/mob_jump_from_ground_system_impl/MobJumpFromGroundSystemImpl.h>
+#include <mc/entity/systems/movement/mob/MobMovementGravity.h>
 #include <mc/entity/utilities/GetAttachPositionUtility.h>
 #include <mc/entity/utilities/JumpPreventionResult.h>
 #include <mc/entity/utilities/JumpPreventionUtility.h>
 #include <mc/nbt/CompoundTagVariant.h>
 #include <mc/server/commands/CommandOrigin.h>
 #include <mc/server/commands/CommandOutput.h>
-#include <mc/entity/systems/movement/mob/MobMovementGravity.h>
 #include <mc/util/VanillaOffsetSystemUtil.h>
+#include <mc/world/Minecraft.h>
 #include <mc/world/actor/ai/control/JumpControl.h>
 #include <mc/world/actor/player/Player.h>
 #include <mc/world/effect/MobEffect.h>
@@ -47,12 +49,22 @@ JumpPreventionResult::JumpPreventionResult() : mUnk146500(), mUnk3d2bc6() {
     mUnk146500.as<bool>()     = false;
     mUnk3d2bc6.as<BlockPos>() = {};
 }
-JumpPreventionResult::JumpPreventionResult(JumpPreventionResult const&)            = default;
-JumpPreventionResult& JumpPreventionResult::operator=(JumpPreventionResult const&) = default;
+JumpPreventionResult::JumpPreventionResult(JumpPreventionResult const&)                           = default;
+JumpPreventionResult& JumpPreventionResult::operator=(JumpPreventionResult const&)                = default;
+ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue()                       = default;
+ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue(UpdateFromValue const&) = default;
+ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue&
+ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::operator=(UpdateFromValue const&) = default;
 
 namespace mif::scale {
 
 using namespace ll::memory_literals;
+
+namespace {
+
+bool isValidScale(float scale) { return std::isfinite(scale) && scale > 0.0f; }
+
+} // namespace
 
 // 修复摄像机偏移
 LL_TYPE_INSTANCE_HOOK(
@@ -85,13 +97,13 @@ LL_TYPE_INSTANCE_HOOK(
             registry->get<ActorDataFlagComponent>(entityId),
             std::bit_cast<Optional<PlayerIsSleepingFlagComponent const>>(
                 Optional<PlayerIsSleepingFlagComponent>{
-                    &registry->storage<PlayerIsSleepingFlagComponent>(entityId),
+                    &registry->storage<PlayerIsSleepingFlagComponent>(/*entityId*/),
                     entityId
                 }
             ),
             std::bit_cast<Optional<IsHorizontalPoseFlagComponent const>>(
                 Optional<IsHorizontalPoseFlagComponent>{
-                    &registry->storage<IsHorizontalPoseFlagComponent>(entityId),
+                    &registry->storage<IsHorizontalPoseFlagComponent>(/*entityId*/),
                     entityId
                 }
             ),
@@ -128,8 +140,10 @@ LL_TYPE_INSTANCE_HOOK(
     if (auto result = origin(tag, dataLoadHelper); result) {
         if (tag.contains("Scale", Tag::Type::Float)) {
             auto scale = static_cast<float>(tag["Scale"]);
-            setScale(*this, scale);
-            getInstance().mScales.emplace(this, scale);
+            if (isValidScale(scale)) {
+                setScale(*this, scale);
+                getInstance().mScales.emplace(this, scale);
+            }
         }
         return true;
     }
@@ -391,7 +405,7 @@ LL_STATIC_HOOK(
     std::cout << scale << std::endl;
     auto hasGlidingOrSwimming = synchedActorData.getStatusFlag(ActorFlags::InScaffolding)
                              || synchedActorData.getStatusFlag(ActorFlags::OverScaffolding);
-    auto hasGravity    = synchedActorData.getStatusFlag(ActorFlags::HasGravity);
+    auto hasGravity   = synchedActorData.getStatusFlag(ActorFlags::HasGravity);
     auto hasExtraFlag = synchedActorData.getStatusFlag(ActorFlags::DescendThroughBlock);
 
     if (hasGravity && (!hasGlidingOrSwimming || !hasExtraFlag)) {
@@ -432,6 +446,7 @@ bool iScale::load() {
             if (self["scale"].has_value()) { // set
                 std::vector<std::string> names;
                 auto                     scale = self["scale"].get<ll::command::ParamKind::Float>();
+                if (!isValidScale(scale)) return output.error("scale must be finite and greater than 0");
                 for (auto* target : targets) {
                     setScale(*target, scale);
                     names.push_back(target->getRealName());
@@ -463,14 +478,18 @@ bool iScale::unload() {
 }
 
 void iScale::setScale(Actor& entity, float scale) {
-    entity.mEntityContext->getOrAddComponent<ActorDataBoundingBoxComponent>()
+    if (!isValidScale(scale)) return;
+
+    auto& entityContext = entity.getEntityContext();
+
+    entityContext.getOrAddComponent<ActorDataBoundingBoxComponent>()
         .mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)] = scale;
-    entity.mEntityContext->getOrAddComponent<ActorDataDirtyFlagsComponent>().mDirtyFlags->set(
+    entityContext.getOrAddComponent<ActorDataDirtyFlagsComponent>().mDirtyFlags->set(
         std::to_underlying(ActorFlags::ShowBottom),
         true
     );
-    auto& aabb = *entity.mBuiltInComponents->mAABBShapeComponent->mAABB;
-    aabb.max.y = aabb.min.y + 1.8f * scale;
+    entityContext.getOrAddComponent<ShouldUpdateBoundingBoxRequestComponent>()
+        .mUpdate->template emplace<ShouldUpdateBoundingBoxRequestComponent::UpdateFromDefinition>();
 }
 
 float iScale::getScale(Actor& entity) {
