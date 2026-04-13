@@ -26,6 +26,7 @@ if not has_config("vs_runtime") then
 end
 
 target("iScale")
+    add_rules("@levibuildscript/linkrule")
     add_cxflags(
         "/EHa",
         "/utf-8",
@@ -59,31 +60,6 @@ target("iScale")
         set_optimize("aggressive")
     end
 
-    before_link(function(target)
-        import("lib.detect.find_file")
-        import("core.project.config")
-
-        -- 修复莫名其妙的环境变量缺失导致的链接失败
-        os.addenvs(target:pkgenvs())
-
-        local libdir = path.join(config.builddir(), ".prelink", "lib")
-        if os.exists(libdir) then os.rm(libdir) end
-        os.mkdir(libdir)
-
-        local data = assert(find_file("bedrock_runtime_data", {"$(env PATH)"}), "Cannot find bedrock_runtime_data")
-        local link = assert(find_file("prelink.exe", {"$(env PATH)"}), "Cannot find prelink.exe")
-
-        os.runv(link, {
-            string.format("%s-%s-%s", get_config("target_type"), target:plat(), target:arch()),
-            path.join(config.builddir(), ".prelink"),
-            data,
-            table.unpack(target:objectfiles())
-        })
-
-        target:add("linkdirs", libdir)
-        target:add("links", "bedrock_runtime_api")
-    end)
-
     after_build(function (target)
         import("utils.archive")
 
@@ -106,6 +82,9 @@ target("iScale")
 
         archive.archive(
             path.join(os.projectdir(), "bin", "iScale." .. (get_config("target_version") or "1.21.132.3") .. ".zip"),
-            output_dir
+            output_dir,
+            {
+                excludes = { "*.pdb" }
+            }
         )
     end)

@@ -558,4 +558,5 @@ fabric.properties
 /.idea/
 /.vscode/
 /bin/
+/bin_*/
 /vsxmake2026
