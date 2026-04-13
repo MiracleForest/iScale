@@ -1,5 +1,6 @@
+#pragma include_alias("mc/deps/vanilla_components/ActorDataComponentBase.h", "scale/ActorDataComponentBase.h")
 #include "scale/iScale.h"
-#include "mc/world/actor/ActorFlags.h"
+#include "scale/VersionAdapt.h"
 #include <cmath>
 #include <ll/api/Versions.h>
 #include <ll/api/command/CommandHandle.h>
@@ -9,6 +10,7 @@
 #include <ll/api/event/server/ServerStartedEvent.h>
 #include <ll/api/mod/RegisterHelper.h>
 #include <ll/api/service/Bedrock.h>
+#include <mc/deps/core/math/Vec2.h>
 #include <mc/deps/ecs/gamerefs_entity/EntityRegistry.h>
 #include <mc/deps/ecs/strict/StrictEntityContext.h>
 #include <mc/deps/vanilla_components/AABBShapeComponent.h>
@@ -17,6 +19,8 @@
 #include <mc/deps/vanilla_components/ActorDataFlagComponent.h>
 #include <mc/deps/vanilla_components/OffsetsComponent.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
+#include <mc/deps/vanilla_components/StateVectorComponent.h>
+#include <mc/entity/components/ActorRotationComponent.h>
 #include <mc/entity/components/FallDistanceComponent.h>
 #include <mc/entity/components/IsHorizontalPoseFlagComponent.h>
 #include <mc/entity/components/MobEffectsComponent.h>
@@ -42,8 +46,10 @@
 #include <mc/world/actor/player/Player.h>
 #include <mc/world/effect/MobEffect.h>
 #include <mc/world/effect/MobEffectInstance.h>
+#include <mc/world/level/BlockPos.h>
 #include <mc/world/level/BlockSource.h>
 #include <mc/world/level/material/Material.h>
+#include <mc/world/phys/AABB.h>
 
 JumpPreventionResult::JumpPreventionResult() : mUnk146500(), mUnk3d2bc6() {
     mUnk146500.as<bool>()     = false;
@@ -60,19 +66,12 @@ namespace mif::scale {
 
 using namespace ll::memory_literals;
 
-namespace {
-
-bool isValidScale(float scale) { return std::isfinite(scale) && scale > 0.0f; }
-
-} // namespace
-
 // 修复摄像机偏移
 LL_TYPE_INSTANCE_HOOK(
     iScale::TickCameraOffsetHook,
     HookPriority::Normal,
     VanillaOffsetSystem,
-    // &VanillaOffsetSystem::$tick
-    "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 41 56 41 57 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? 48 8B DA"_sig,
+    TICK_CAMERA_OFFSET_TARGET,
     void,
     StrictExecutionContext<
         Filter<PlayerComponent, ActorMovementTickNeededComponent>,
@@ -91,25 +90,28 @@ LL_TYPE_INSTANCE_HOOK(
         auto& vanillaOffsetComponent = registry->get<VanillaOffsetComponent>(entityId);
         auto& offsetsComponent       = registry->get<OffsetsComponent>(entityId);
         auto  scale                  = getScale(registry, entityId);
-        auto cameraOffset = static_cast<decltype(&VanillaOffsetSystemUtil::getCameraOffset)>(
-            "48 89 5C 24 ?? 48 89 7C 24 ?? 49 8B 00"_sig.resolve()
-        )(
+        auto cameraOffset = GET_CAMERA_OFFSET_PTR(
             registry->get<ActorDataFlagComponent>(entityId),
             std::bit_cast<Optional<PlayerIsSleepingFlagComponent const>>(
                 Optional<PlayerIsSleepingFlagComponent>{
-                    &registry->storage<PlayerIsSleepingFlagComponent>(/*entityId*/),
+                    &registry->storage<PlayerIsSleepingFlagComponent>(),
                     entityId
                 }
             ),
             std::bit_cast<Optional<IsHorizontalPoseFlagComponent const>>(
                 Optional<IsHorizontalPoseFlagComponent>{
-                    &registry->storage<IsHorizontalPoseFlagComponent>(/*entityId*/),
+                    &registry->storage<IsHorizontalPoseFlagComponent>(),
                     entityId
                 }
             ),
             0.35f
         );
-        if (mUnk98f57d.as<bool>()) { // mUnk98f57d -> mIsClientSide
+
+        if (!mUnk98f57d.as<bool>()) { // mUnk98f57d -> mIsClientSide
+            vanillaOffsetComponent.mCurrentOffset->y = (offsetsComponent.mHeightOffset - cameraOffset) * scale + cameraOffset * (1 - scale);
+        }
+#if defined (MC_VERSION_1_21_132_3)
+        else {
             auto prevY           = vanillaOffsetComponent.mPreviousOffset->y;
             auto originalNewY    = vanillaOffsetComponent.mCurrentOffset->y;
             auto heightOffset    = offsetsComponent.mHeightOffset;
@@ -120,9 +122,8 @@ LL_TYPE_INSTANCE_HOOK(
             auto scaledNewY = (prevY + heightOffset - scaledCameraOffset - climbingOffsetY) / 2.0f;   // 计算缩放后的y
 
             vanillaOffsetComponent.mCurrentOffset->y = scaledNewY;
-        } else {
-            vanillaOffsetComponent.mCurrentOffset->y = offsetsComponent.mHeightOffset - scale * (offsetsComponent.mHeightOffset - cameraOffset);
         }
+#endif
     }
     // clang-format on
 }
@@ -140,10 +141,8 @@ LL_TYPE_INSTANCE_HOOK(
     if (auto result = origin(tag, dataLoadHelper); result) {
         if (tag.contains("Scale", Tag::Type::Float)) {
             auto scale = static_cast<float>(tag["Scale"]);
-            if (isValidScale(scale)) {
-                setScale(*this, scale);
-                getInstance().mScales.emplace(this, scale);
-            }
+            setScale(*this, scale);
+            getInstance().mScales.emplace(this, scale);
         }
         return true;
     }
@@ -182,8 +181,7 @@ LL_TYPE_STATIC_HOOK(
     iScale::TickBoundingBoxHook,
     HookPriority::Low,
     PlayerBoundingBoxStateUpdateSystem,
-    // &PlayerBoundingBoxStateUpdateSystem::tickPlayerBoundingBoxStateUpdateSystem,
-    "48 8B C4 48 89 58 ?? 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 ?? 48 81 EC ?? ?? ?? ?? 0F 29 70 ?? 0F 29 78 ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 4D 8B F0 4C 8B E2"_sig,
+    TICK_BOUNDING_BOX_TARGET,
     void,
     StrictEntityContext const&   context,
     AABBShapeComponent const&    aabb,
@@ -231,19 +229,19 @@ LL_TYPE_STATIC_HOOK(
     auto scale = getScale(registry, context.mEntity);
 
     static auto shrink = [](AABB& aabb, Vec3 offset) {
-        aabb.min += offset;
-        aabb.max -= offset;
+            aabb.min += offset;
+            aabb.max -= offset;
 
-        Vec3::forEachComponent([&]<typename axis_type, size_t iter> {
-            auto& min = aabb.min.template get<axis_type, iter>();
-            auto& max = aabb.max.template get<axis_type, iter>();
+            Vec3::forEachComponent([&]<typename axis_type, size_t iter> {
+                auto& min = aabb.min.template get<axis_type, iter>();
+                auto& max = aabb.max.template get<axis_type, iter>();
 
-            if (min > max) {
-                auto mid = (min + max) * 0.5f;
-                min      = mid;
-                max      = mid;
-            }
-        });
+                if (min > max) {
+                    auto mid = (min + max) * 0.5f;
+                    min      = mid;
+                    max      = mid;
+                }
+            });
     };
 
     static auto doesIntersect = [](IConstBlockSource const&          blockSource,
@@ -251,15 +249,13 @@ LL_TYPE_STATIC_HOOK(
                                    const GetCollisionShapeInterface* entity,
                                    std::vector<AABB>&                storage,
                                    bool                              withUnloadedChunks) {
-        blockSource.fetchCollisionShapes(storage, testAABB, withUnloadedChunks, entity, nullptr);
+            blockSource.fetchCollisionShapes(storage, testAABB, withUnloadedChunks, entity, nullptr);
 
-        return std::ranges::any_of(storage, [&](auto& shape) { return shape.intersects(testAABB); });
+            return std::ranges::any_of(storage, [&](auto& shape) { return shape.intersects(testAABB); });
     };
 
     // clang-format off
-    request.mBreathingPoint = reinterpret_cast<decltype(&GetAttachPositionUtility::getPassengerAttachPos)>(
-        "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 41 56 41 57 48 83 EC ?? F3 0F 10 84 24"_sig.resolve()
-    )(
+    request.mBreathingPoint = GET_PASSENGER_ATTACH_POS_PTR(
         context,
         views,
         SharedTypes::Legacy::ActorLocation::BreathingPoint,
@@ -276,8 +272,7 @@ LL_TYPE_STATIC_HOOK(
     struct CollisionProxy {
     public:
         uintptr_t mVTable{
-            reinterpret_cast<uintptr_t>(ll::sys_utils::getImageRange().data())
-            + (ll::isClient() ? 0x845EA88 : 0x5D74FA8)
+            reinterpret_cast<uintptr_t>(ll::sys_utils::getImageRange().data()) + COLLISION_PROXY_VTABLE_OFFSET
         };
         StrictEntityContext         mEntity;
         decltype(&executionContext) mExecutionContext;
@@ -323,8 +318,7 @@ LL_TYPE_STATIC_HOOK(
 LL_STATIC_HOOK(
     iScale::MobJumpHook,
     HookPriority::Normal,
-    // &MobJumpFromGroundSystemImpl::mobJumpFromGround,
-    "48 89 5C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 55 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 48 8B 7D"_sig,
+    MOB_JUMP_HOOK_TARGET,
     void,
     StrictEntityContext const&                   entity,
     AABBShapeComponent const&                    aabbShapeComponent,
@@ -342,9 +336,7 @@ LL_STATIC_HOOK(
     mobJumpComponent.mJumpStartPos = stateVectorComponent.mPos;
 
     // clang-format off
-    auto preventionResult = reinterpret_cast<decltype(&JumpPreventionUtility::getJumpPrevention)>(
-        "48 89 5C 24 ?? 48 89 6C 24 ?? 56 57 41 56 48 83 EC ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 ?? 48 8B B4 24 ?? ?? ?? ?? 49 8B F9"_sig.resolve()
-    )(
+    auto preventionResult = GET_JUMP_PREVENTION_PTR(
         true,
         *aabbShapeComponent.mAABB,
         *stateVectorComponent.mPos,
@@ -353,21 +345,21 @@ LL_STATIC_HOOK(
     // clang-format on
 
     auto jumpPower = [&]() {
-        if (isSquid) return 0.2f;
-        if (jumpControlComponent && jumpControlComponent->mJumpControl) {
-            return jumpControlComponent->mJumpControl->getJumpPower(*jumpControlComponent);
-        }
-        return 0.42f;
+            if (isSquid) return 0.2f;
+            if (jumpControlComponent && jumpControlComponent->mJumpControl) {
+                return jumpControlComponent->mJumpControl->getJumpPower(*jumpControlComponent);
+            }
+            return 0.42f;
     }();
     auto effectAmplifier = [&]() {
-        auto* mobEFfect = MobEffect::JUMP();
-        if (mobEffectsComponent.mMobEffects->size() > mobEFfect->mId) {
-            auto& mobEffectInstance = (*mobEffectsComponent.mMobEffects)[mobEFfect->mId];
-            if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
-                return (static_cast<float>(mobEffectInstance.mAmplifier) + 1.0f) * 0.1f;
+            auto* mobEFfect = MobEffect::JUMP();
+            if (mobEffectsComponent.mMobEffects->size() > mobEFfect->mId) {
+                auto& mobEffectInstance = (*mobEffectsComponent.mMobEffects)[mobEFfect->mId];
+                if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
+                    return (static_cast<float>(mobEffectInstance.mAmplifier) + 1.0f) * 0.1f;
+                }
             }
-        }
-        return 0.0f;
+            return 0.0f;
     }();
 
     auto newVerticalSpeed =
@@ -392,8 +384,7 @@ LL_STATIC_HOOK(
 LL_STATIC_HOOK(
     iScale::TickAirGravityHook,
     HookPriority::Normal,
-    // &MobMovementGravity::tickAirGravity,
-    "48 8B 4A ?? F6 C1"_sig,
+    TICK_AIR_GRAVITY_HOOK_TARGET,
     void,
     StrictEntityContext const&    context,
     ActorDataFlagComponent const& synchedActorData,
@@ -401,23 +392,22 @@ LL_STATIC_HOOK(
     StateVectorComponent&         stateVector,
     FallDistanceComponent&        fallDistance
 ) {
-    auto scale = getScale(*ll::service::getMinecraft(false)->mEntityRegistry->get()->mRegistry, context.mEntity);
-    std::cout << scale << std::endl;
-    auto hasGlidingOrSwimming = synchedActorData.getStatusFlag(ActorFlags::InScaffolding)
-                             || synchedActorData.getStatusFlag(ActorFlags::OverScaffolding);
-    auto hasGravity   = synchedActorData.getStatusFlag(ActorFlags::HasGravity);
-    auto hasExtraFlag = synchedActorData.getStatusFlag(ActorFlags::DescendThroughBlock);
+    auto scale = getScale(*ll::service::getMinecraft()->mEntityRegistry->get()->mRegistry, context.mEntity);
+    auto hasGlidingOrSwimming = synchedActorData.mValue.test(std::to_underlying(ActorFlags::InScaffolding))
+                             || synchedActorData.mValue.test(std::to_underlying(ActorFlags::OverScaffolding));
+    auto hasGravity   = synchedActorData.mValue.test(std::to_underlying(ActorFlags::HasGravity));
+    auto hasExtraFlag = synchedActorData.mValue.test(std::to_underlying(ActorFlags::DescendThroughBlock));
 
     if (hasGravity && (!hasGlidingOrSwimming || !hasExtraFlag)) {
         if (stateVector.mPosDelta->y < 0.0f && [&]() {
-            auto* mobEFfect = MobEffect::SLOW_FALLING();
-            if (mobEffects.mMobEffects->size() > mobEFfect->mId) {
-                auto& mobEffectInstance = (*mobEffects.mMobEffects)[mobEFfect->mId];
-                if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
-                    return true;
+                auto* mobEFfect = MobEffect::SLOW_FALLING();
+                if (mobEffects.mMobEffects->size() > mobEFfect->mId) {
+                    auto& mobEffectInstance = (*mobEffects.mMobEffects)[mobEFfect->mId];
+                    if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
+                        return true;
+                    }
                 }
-            }
-            return false;
+                return false;
         }()) {
             stateVector.mPosDelta->y -= 0.01f * scale;
             fallDistance.mValue       = 0.0f;
@@ -434,7 +424,11 @@ iScale& iScale::getInstance() {
 
 bool iScale::load() {
     mListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::ServerStartedEvent>([](auto&) {
-        ll::command::CommandRegistrar::getInstance(false)
+        ll::command::CommandRegistrar::getInstance(
+#ifdef MC_VERSION_1_21_132_3
+            false
+#endif
+        )
             .getOrCreateCommand("scale", "缩放玩家大小", CommandPermissionLevel::GameDirectors)
             .runtimeOverload()
             .required("target", ll::command::ParamKind::Player)
@@ -446,7 +440,6 @@ bool iScale::load() {
             if (self["scale"].has_value()) { // set
                 std::vector<std::string> names;
                 auto                     scale = self["scale"].get<ll::command::ParamKind::Float>();
-                if (!isValidScale(scale)) return output.error("scale must be finite and greater than 0");
                 for (auto* target : targets) {
                     setScale(*target, scale);
                     names.push_back(target->getRealName());
@@ -478,8 +471,6 @@ bool iScale::unload() {
 }
 
 void iScale::setScale(Actor& entity, float scale) {
-    if (!isValidScale(scale)) return;
-
     auto& entityContext = entity.getEntityContext();
 
     entityContext.getOrAddComponent<ActorDataBoundingBoxComponent>()
@@ -495,7 +486,7 @@ void iScale::setScale(Actor& entity, float scale) {
 float iScale::getScale(Actor& entity) {
     return entity.mEntityContext->tryGetComponent<ActorDataBoundingBoxComponent>()
         .transform([](auto&& component) {
-        return component.mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)];
+            return component.mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)];
     }).value_or(1.0f);
 }
 

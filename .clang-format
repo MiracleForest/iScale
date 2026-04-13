@@ -45,3 +45,5 @@ TabWidth: 4
 UseTab: Never
 SortIncludes: CaseSensitive
 LambdaBodyIndentation: OuterScope
+IndentPPDirectives: AfterHash
+PPIndentWidth: 2
