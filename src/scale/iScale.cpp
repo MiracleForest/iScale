@@ -1,6 +1,4 @@
-#pragma include_alias("mc/deps/vanilla_components/ActorDataComponentBase.h", "scale/ActorDataComponentBase.h")
 #include "scale/iScale.h"
-#include "scale/VersionAdapt.h"
 #include <cmath>
 #include <ll/api/Versions.h>
 #include <ll/api/command/CommandHandle.h>
@@ -13,6 +11,7 @@
 #include <mc/deps/core/math/Vec2.h>
 #include <mc/deps/ecs/gamerefs_entity/EntityRegistry.h>
 #include <mc/deps/ecs/strict/StrictEntityContext.h>
+#include <mc/deps/nbt/CompoundTagVariant.h>
 #include <mc/deps/vanilla_components/AABBShapeComponent.h>
 #include <mc/deps/vanilla_components/ActorDataBoundingBoxComponent.h>
 #include <mc/deps/vanilla_components/ActorDataDirtyFlagsComponent.h>
@@ -21,6 +20,7 @@
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
 #include <mc/deps/vanilla_components/StateVectorComponent.h>
 #include <mc/entity/components/ActorRotationComponent.h>
+#include <mc/entity/components/ApplyGravityComponent.h>
 #include <mc/entity/components/FallDistanceComponent.h>
 #include <mc/entity/components/IsHorizontalPoseFlagComponent.h>
 #include <mc/entity/components/MobEffectsComponent.h>
@@ -37,7 +37,6 @@
 #include <mc/entity/utilities/GetAttachPositionUtility.h>
 #include <mc/entity/utilities/JumpPreventionResult.h>
 #include <mc/entity/utilities/JumpPreventionUtility.h>
-#include <mc/nbt/CompoundTagVariant.h>
 #include <mc/server/commands/CommandOrigin.h>
 #include <mc/server/commands/CommandOutput.h>
 #include <mc/util/VanillaOffsetSystemUtil.h>
@@ -51,12 +50,6 @@
 #include <mc/world/level/material/Material.h>
 #include <mc/world/phys/AABB.h>
 
-JumpPreventionResult::JumpPreventionResult() : mUnk146500(), mUnk3d2bc6() {
-    mUnk146500.as<bool>()     = false;
-    mUnk3d2bc6.as<BlockPos>() = {};
-}
-JumpPreventionResult::JumpPreventionResult(JumpPreventionResult const&)                           = default;
-JumpPreventionResult& JumpPreventionResult::operator=(JumpPreventionResult const&)                = default;
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue()                       = default;
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue(UpdateFromValue const&) = default;
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue&
@@ -71,10 +64,10 @@ LL_TYPE_INSTANCE_HOOK(
     iScale::TickCameraOffsetHook,
     HookPriority::Normal,
     VanillaOffsetSystem,
-    TICK_CAMERA_OFFSET_TARGET,
+    &VanillaOffsetSystem::$tick,
     void,
     StrictExecutionContext<
-        Filter<PlayerComponent, ActorMovementTickNeededComponent>,
+        Filter<PlayerComponent, InterpolateMovementNeededComponent>,
         Read<OffsetsComponent, ActorDataFlagComponent, PlayerIsSleepingFlagComponent>,
         Write<VanillaOffsetComponent>,
         AddRemove<IsHorizontalPoseFlagComponent>,
@@ -90,7 +83,7 @@ LL_TYPE_INSTANCE_HOOK(
         auto& vanillaOffsetComponent = registry->get<VanillaOffsetComponent>(entityId);
         auto& offsetsComponent       = registry->get<OffsetsComponent>(entityId);
         auto  scale                  = getScale(registry, entityId);
-        auto cameraOffset = GET_CAMERA_OFFSET_PTR(
+        auto cameraOffset = VanillaOffsetSystemUtil::getCameraOffset(
             registry->get<ActorDataFlagComponent>(entityId),
             std::bit_cast<Optional<PlayerIsSleepingFlagComponent const>>(
                 Optional<PlayerIsSleepingFlagComponent>{
@@ -107,10 +100,10 @@ LL_TYPE_INSTANCE_HOOK(
             0.35f
         );
 
-        if (!mUnk98f57d.as<bool>()) { // mUnk98f57d -> mIsClientSide
+        if (!mIsClientSide) {
             vanillaOffsetComponent.mCurrentOffset->y = (offsetsComponent.mHeightOffset - cameraOffset) * scale + cameraOffset * (1 - scale);
         }
-#if defined (MC_VERSION_1_21_132_3)
+#if defined (LL_PLAT_C)
         else {
             auto prevY           = vanillaOffsetComponent.mPreviousOffset->y;
             auto originalNewY    = vanillaOffsetComponent.mCurrentOffset->y;
@@ -181,7 +174,7 @@ LL_TYPE_STATIC_HOOK(
     iScale::TickBoundingBoxHook,
     HookPriority::Low,
     PlayerBoundingBoxStateUpdateSystem,
-    TICK_BOUNDING_BOX_TARGET,
+    &PlayerBoundingBoxStateUpdateSystem::tickPlayerBoundingBoxStateUpdateSystem,
     void,
     StrictEntityContext const&   context,
     AABBShapeComponent const&    aabb,
@@ -222,40 +215,25 @@ LL_TYPE_STATIC_HOOK(
     GetAttachPositionViews const& views,
     IConstBlockSource const&      region
 ) {
+    using namespace ll::memory_literals;
     auto& registry = ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&executionContext, 0)->mRegistry;
     if (!registry->any_of<ActorDataBoundingBoxComponent>(context.mEntity)) {
         return origin(context, aabb, request, executionContext, sneakHeight, views, region);
     }
     auto scale = getScale(registry, context.mEntity);
 
-    static auto shrink = [](AABB& aabb, Vec3 offset) {
-            aabb.min += offset;
-            aabb.max -= offset;
-
-            Vec3::forEachComponent([&]<typename axis_type, size_t iter> {
-                auto& min = aabb.min.template get<axis_type, iter>();
-                auto& max = aabb.max.template get<axis_type, iter>();
-
-                if (min > max) {
-                    auto mid = (min + max) * 0.5f;
-                    min      = mid;
-                    max      = mid;
-                }
-            });
-    };
-
     static auto doesIntersect = [](IConstBlockSource const&          blockSource,
                                    AABB const&                       testAABB,
                                    const GetCollisionShapeInterface* entity,
                                    std::vector<AABB>&                storage,
                                    bool                              withUnloadedChunks) {
-            blockSource.fetchCollisionShapes(storage, testAABB, withUnloadedChunks, entity, nullptr);
+        blockSource.fetchCollisionShapes(storage, testAABB, withUnloadedChunks, entity, nullptr);
 
-            return std::ranges::any_of(storage, [&](auto& shape) { return shape.intersects(testAABB); });
+        return std::ranges::any_of(storage, [&](auto& shape) { return shape.intersects(testAABB); });
     };
 
     // clang-format off
-    request.mBreathingPoint = GET_PASSENGER_ATTACH_POS_PTR(
+    request.mBreathingPoint = GetAttachPositionUtility::getPassengerAttachPos(
         context,
         views,
         SharedTypes::Legacy::ActorLocation::BreathingPoint,
@@ -271,10 +249,25 @@ LL_TYPE_STATIC_HOOK(
 
     struct CollisionProxy {
     public:
-        uintptr_t mVTable{
-            reinterpret_cast<uintptr_t>(ll::sys_utils::getImageRange().data()) + COLLISION_PROXY_VTABLE_OFFSET
-        };
-        StrictEntityContext         mEntity;
+        void*               mVTable{reinterpret_cast<void* (*)()>("?$vftable@?$GetCollisionShapeEntityProxy@V?$Strict"
+                                                                  "ExecutionContext@U?$Filter@UCanStandOnSnowFlagComp"
+                                                                  "onent@@UHasLightweightFamilyFlagComponent@@UHorseF"
+                                                                  "lagComponent@@UMobFlagComponent@@UParrotFlagCompon"
+                                                                  "ent@@UVehicleComponent@@UCamelFlagComponent@@UPlay"
+                                                                  "erComponent@@@@U?$Read@UAABBShapeComponent@@UMovem"
+                                                                  "entAbilitiesComponent@@UActorTypeComponent@@UFallD"
+                                                                  "istanceComponent@@UPassengerComponent@@UActorGameT"
+                                                                  "ypeComponent@@UActorDataFlagComponent@@UVehicleCom"
+                                                                  "ponent@@UActorRotationComponent@@UMobBodyRotationC"
+                                                                  "omponent@@URenderRotationComponent@@UStandAnimatio"
+                                                                  "nComponent@@UOffsetsComponent@@UVanillaOffsetCompo"
+                                                                  "nent@@UPassengerRenderingRidingOffsetComponent@@UD"
+                                                                  "imensionTypeComponent@@@@U?$Write@UPlayerInputRequ"
+                                                                  "estComponent@@@@U?$AddRemove@$$V@@U?$GlobalRead@UE"
+                                                                  "xternalDataComponent@@ULocalConstBlockSourceFactor"
+                                                                  "yComponent@@@@U?$GlobalWrite@$$V@@U?$EntityFactory"
+                                                                  "T@$$V@@@@@@SAPEAPEAXXZ"_sig.resolve())};
+        StrictEntityContext mEntity;
         decltype(&executionContext) mExecutionContext;
 
     public:
@@ -291,24 +284,39 @@ LL_TYPE_STATIC_HOOK(
     {
         auto standingAABB   = aabb.mAABB;
         standingAABB->max.y = standingAABB->min.y + 1.8f * scale;
-        shrink(standingAABB, {0.01f});
-        if (doesIntersect(region, standingAABB, collisionProxy.getCollisionShape(), blockStorage, false)) {
+        if (doesIntersect(
+                region,
+                standingAABB->shrink(Vec3{0.01f}),
+                collisionProxy.getCollisionShape(),
+                blockStorage,
+                false
+            )) {
             request.mUnblockedToStand = false;
         }
     }
     {
         auto sneakingAABB   = aabb.mAABB;
         sneakingAABB->max.y = sneakingAABB->min.y + sneakHeight * scale;
-        shrink(sneakingAABB, {0.01f});
-        if (doesIntersect(region, sneakingAABB, collisionProxy.getCollisionShape(), blockStorage, false)) {
+        if (doesIntersect(
+                region,
+                sneakingAABB->shrink(Vec3{0.01f}),
+                collisionProxy.getCollisionShape(),
+                blockStorage,
+                false
+            )) {
             request.mUnblockedToSneak = false;
         }
     }
     {
         auto crawlingAABB   = aabb.mAABB;
         crawlingAABB->max.y = crawlingAABB->min.y + 0.6f * scale;
-        shrink(crawlingAABB, {0.01f});
-        if (doesIntersect(region, crawlingAABB, collisionProxy.getCollisionShape(), blockStorage, false)) {
+        if (doesIntersect(
+                region,
+                crawlingAABB->shrink(Vec3{0.01f}),
+                collisionProxy.getCollisionShape(),
+                blockStorage,
+                false
+            )) {
             request.mUnblockedToCrawl = false;
         }
     }
@@ -318,7 +326,7 @@ LL_TYPE_STATIC_HOOK(
 LL_STATIC_HOOK(
     iScale::MobJumpHook,
     HookPriority::Normal,
-    MOB_JUMP_HOOK_TARGET,
+    &MobJumpFromGroundSystemImpl::mobJumpFromGround,
     void,
     StrictEntityContext const&                   entity,
     AABBShapeComponent const&                    aabbShapeComponent,
@@ -336,7 +344,7 @@ LL_STATIC_HOOK(
     mobJumpComponent.mJumpStartPos = stateVectorComponent.mPos;
 
     // clang-format off
-    auto preventionResult = GET_JUMP_PREVENTION_PTR(
+    auto preventionResult = JumpPreventionUtility::getJumpPrevention(
         true,
         *aabbShapeComponent.mAABB,
         *stateVectorComponent.mPos,
@@ -345,77 +353,80 @@ LL_STATIC_HOOK(
     // clang-format on
 
     auto jumpPower = [&]() {
-            if (isSquid) return 0.2f;
-            if (jumpControlComponent && jumpControlComponent->mJumpControl) {
-                return jumpControlComponent->mJumpControl->getJumpPower(*jumpControlComponent);
-            }
-            return 0.42f;
+        if (isSquid) return 0.2f;
+        if (jumpControlComponent && jumpControlComponent->mJumpControl) {
+            return jumpControlComponent->mJumpControl->getJumpPower(*jumpControlComponent);
+        }
+        return 0.42f;
     }();
     auto effectAmplifier = [&]() {
-            auto* mobEFfect = MobEffect::JUMP();
-            if (mobEffectsComponent.mMobEffects->size() > mobEFfect->mId) {
-                auto& mobEffectInstance = (*mobEffectsComponent.mMobEffects)[mobEFfect->mId];
-                if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
-                    return (static_cast<float>(mobEffectInstance.mAmplifier) + 1.0f) * 0.1f;
-                }
+        auto* mobEFfect = MobEffect::JUMP();
+        if (mobEffectsComponent.mMobEffects->size() > mobEFfect->mId) {
+            auto& mobEffectInstance = (*mobEffectsComponent.mMobEffects)[mobEFfect->mId];
+            if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
+                return (static_cast<float>(mobEffectInstance.mAmplifier) + 1.0f) * 0.1f;
             }
-            return 0.0f;
+        }
+        return 0.0f;
     }();
+    auto& registry = *ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)->mRegistry;
 
-    auto newVerticalSpeed =
-        (preventionResult.mUnk146500.as<bool>() ? 0.6f : 1.0f) * (effectAmplifier + jumpPower)
-        * getScale(*ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)->mRegistry, entity.mEntity);
+    auto newVerticalSpeed = (preventionResult.mJumpIsPrevented ? 0.6f : 1.0f) * (effectAmplifier + jumpPower)
+                          * getScale(registry, entity.mEntity);
 
     if (newVerticalSpeed > stateVectorComponent.mPosDelta->y) {
         stateVectorComponent.mPosDelta->y = newVerticalSpeed;
     }
 
     if (actorDataFlagComponent.mValue.test(std::to_underlying(ActorFlags::Sprinting))) {
-        auto yawRad = actorRotationComponent.mRotationDegree->y * 0.017453292f;
+        auto yawRad = actorRotationComponent.mRot->y * 0.017453292f;
 
         stateVectorComponent.mPosDelta->x -= std::sin(yawRad) * 0.2f;
         stateVectorComponent.mPosDelta->z += std::cos(yawRad) * 0.2f;
     }
 
-    (void)ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)
-        ->mRegistry->get_or_emplace<TriggerJumpRequestComponent>(entity.mEntity, preventionResult);
+    (void)registry.get_or_emplace<TriggerJumpRequestComponent>(entity.mEntity, preventionResult);
 }
 
+#ifdef LL_PLAT_S
 LL_STATIC_HOOK(
     iScale::TickAirGravityHook,
     HookPriority::Normal,
-    TICK_AIR_GRAVITY_HOOK_TARGET,
+    &MobMovementGravity::tickDefaultGravity,
     void,
-    StrictEntityContext const&    context,
-    ActorDataFlagComponent const& synchedActorData,
-    MobEffectsComponent const&    mobEffects,
-    StateVectorComponent&         stateVector,
-    FallDistanceComponent&        fallDistance
+    StrictEntityContext const&             context,
+    ActorDataFlagComponent const&          synchedActorData,
+    MobEffectsComponent const&             mobEffects,
+    StateVectorComponent const&            stateVector,
+    EntityModifier<ApplyGravityComponent>& modifier
 ) {
-    auto scale = getScale(*ll::service::getMinecraft()->mEntityRegistry->get()->mRegistry, context.mEntity);
-    auto hasGlidingOrSwimming = synchedActorData.mValue.test(std::to_underlying(ActorFlags::InScaffolding))
+    auto& registry             = *ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)->mRegistry;
+    auto  scale                = getScale(registry, context.mEntity);
+    auto  hasGlidingOrSwimming = synchedActorData.mValue.test(std::to_underlying(ActorFlags::InScaffolding))
                              || synchedActorData.mValue.test(std::to_underlying(ActorFlags::OverScaffolding));
-    auto hasGravity   = synchedActorData.mValue.test(std::to_underlying(ActorFlags::HasGravity));
-    auto hasExtraFlag = synchedActorData.mValue.test(std::to_underlying(ActorFlags::DescendThroughBlock));
+    auto  hasGravity   = synchedActorData.mValue.test(std::to_underlying(ActorFlags::HasGravity));
+    auto  hasExtraFlag = synchedActorData.mValue.test(std::to_underlying(ActorFlags::DescendThroughBlock));
+    auto& component    = registry.get_or_emplace<ApplyGravityComponent>(context.mEntity);
 
     if (hasGravity && (!hasGlidingOrSwimming || !hasExtraFlag)) {
         if (stateVector.mPosDelta->y < 0.0f && [&]() {
-                auto* mobEFfect = MobEffect::SLOW_FALLING();
-                if (mobEffects.mMobEffects->size() > mobEFfect->mId) {
-                    auto& mobEffectInstance = (*mobEffects.mMobEffects)[mobEFfect->mId];
-                    if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
-                        return true;
-                    }
+            auto* mobEFfect = MobEffect::SLOW_FALLING();
+            if (mobEffects.mMobEffects->size() > mobEFfect->mId) {
+                auto& mobEffectInstance = (*mobEffects.mMobEffects)[mobEFfect->mId];
+                if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
+                    return true;
                 }
-                return false;
+            }
+            return false;
         }()) {
-            stateVector.mPosDelta->y -= 0.01f * scale;
-            fallDistance.mValue       = 0.0f;
+            component.mResetFallDistance = true;
+            component.mGravity           = 0.01f * scale;
         } else {
-            stateVector.mPosDelta->y -= 0.08f * scale;
+            component.mGravity = 0.08f * scale;
         }
     }
 }
+#endif
 
 iScale& iScale::getInstance() {
     static iScale instance;
@@ -424,11 +435,7 @@ iScale& iScale::getInstance() {
 
 bool iScale::load() {
     mListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::ServerStartedEvent>([](auto&) {
-        ll::command::CommandRegistrar::getInstance(
-#ifdef MC_VERSION_1_21_132_3
-            false
-#endif
-        )
+        ll::command::CommandRegistrar::getInstance(false)
             .getOrCreateCommand("scale", "缩放玩家大小", CommandPermissionLevel::GameDirectors)
             .runtimeOverload()
             .required("target", ll::command::ParamKind::Player)
@@ -486,7 +493,7 @@ void iScale::setScale(Actor& entity, float scale) {
 float iScale::getScale(Actor& entity) {
     return entity.mEntityContext->tryGetComponent<ActorDataBoundingBoxComponent>()
         .transform([](auto&& component) {
-            return component.mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)];
+        return component.mValue[std::to_underlying(ActorDataBoundingBoxComponent::Type::Scale)];
     }).value_or(1.0f);
 }
 

@@ -6,19 +6,13 @@ add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
 add_repositories("groupmountain-repo https://github.com/GroupMountain/xmake-repo.git")
 add_repositories("miracleforest-repo https://github.com/MiracleForest/xmake-repo.git")
 
-local versions = {
-    ["1.21.60.10"]  = "1.1.2",
-    ["1.21.93.1"]   = "1.4.4",
-    ["1.21.132.3"]  = "1.9.8"
-}
-
-option("target_version")
-    set_default("1.21.132.3")
+option("target_type")
+    set_default("server")
     set_showmenu(true)
-    set_values(table.keys(versions))
+    set_values("server", "client")
 option_end()
 
-add_requires("levilamina " .. (versions[get_config("target_version") or "1.21.132.3"]), { configs = { target_type = "server" } })
+add_requires("levilamina 26.10.14", { configs = { target_type = "server" } })
 add_requires("levibuildscript 0.5.0")
 
 if not has_config("vs_runtime") then
@@ -43,7 +37,7 @@ target("iScale")
         "UNICODE",
         "_HAS_CXX23=1",
         "_SILENCE_CXX20_IS_ALWAYS_EQUAL_DEPRECATION_WARNING",
-        "MC_VERSION_" .. string.gsub(get_config("target_version") or "1.21.132.3", "%.", "_")
+        ( is_config("target_type", "server") and "LL_PLAT_S" or "LL_PLAT_C" )
     )
     add_packages(
         "levilamina"
@@ -63,7 +57,7 @@ target("iScale")
     after_build(function (target)
         import("utils.archive")
 
-        local output_dir = path.join(os.projectdir(), "bin_" .. (get_config("target_version") or "1.21.132.3"), "iScale")
+        local output_dir = path.join(os.projectdir(), "bin", "iScale")
 
         os.rm(output_dir)
 
@@ -77,14 +71,6 @@ target("iScale")
                 entry = "iScale.dll",
                 version = import("scripts.get-version-info", { rootdir = os.projectdir() }).get_version_info().version_str,
                 author = "MiracleForest"
-            }
-        )
-
-        archive.archive(
-            path.join(os.projectdir(), "bin", "iScale." .. (get_config("target_version") or "1.21.132.3") .. ".zip"),
-            output_dir,
-            {
-                excludes = { "*.pdb" }
             }
         )
     end)

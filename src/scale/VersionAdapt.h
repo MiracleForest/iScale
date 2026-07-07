@@ -2,7 +2,7 @@
 
 // clang-format off
 
-#if defined(MC_VERSION_1_21_60_10)
+#if defined(MC_VERSION_1_21_60_10) || defined(MC_VERSION_1_26_10_4)
     #define TICK_CAMERA_OFFSET_TARGET      &VanillaOffsetSystem::$tick
     #define TICK_BOUNDING_BOX_TARGET       &PlayerBoundingBoxStateUpdateSystem::tickPlayerBoundingBoxStateUpdateSystem
     #define MOB_JUMP_HOOK_TARGET           &MobJumpFromGroundSystemImpl::mobJumpFromGround
