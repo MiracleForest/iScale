@@ -1,0 +1,58 @@
+{
+  "format_version": 3,
+  "format_uuid": "289f771f-2c9a-4d73-9f3f-8492495a924d",
+  "tooth": "github.com/MiracleForest/iScale",
+  "version": "1.0.0",
+  "info": {
+    "name": "iScale",
+    "description": "A LeviLamina mod for scaling player size.",
+    "tags": ["platform:levilamina", "type:mod"],
+    "avatar_url": "https://raw.githubusercontent.com/MiracleForest/iScale/refs/heads/release/icon.gif"
+  },
+  "variants": [
+    {
+      "label": "",
+      "platform": "win-x64",
+      "dependencies": {
+        "github.com/LiteLDev/LeviLamina#server": "26.20.*"
+      },
+      "assets": [
+        {
+          "type": "zip",
+          "urls": [
+            "https://{{tooth}}/releases/download/v{{version}}/iScale-server-windows-x64.zip"
+          ],
+          "placements": [
+            {
+              "type": "dir",
+              "src": "iScale/",
+              "dest": "plugins/iScale/"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "client",
+      "platform": "win-x64",
+      "dependencies": {
+        "github.com/LiteLDev/LeviLamina#client": "26.20.*"
+      },
+      "assets": [
+        {
+          "type": "zip",
+          "urls": [
+            "https://{{tooth}}/releases/download/v{{version}}/iScale-client-windows-x64.zip"
+          ],
+          "placements": [
+            {
+              "type": "dir",
+              "src": "iScale/",
+              "dest": "mods/iScale/"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

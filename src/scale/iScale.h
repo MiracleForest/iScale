@@ -1,16 +1,18 @@
 #pragma once
 #include <ll/api/event/ListenerBase.h>
-#include <ll/api/memory/Hook.h>
 #include <ll/api/mod/NativeMod.h>
 
 class Actor;
 class EntityId;
+namespace ll::memory {
+template <class... Ts>
+class HookRegistrar;
+}
 
 namespace mif::scale {
 
 class iScale {
 public:
-    struct GetCameraOffsetHook;
     struct TickCameraOffsetHook;
     struct ActorLoadHook;
     struct ActorSaveHook;

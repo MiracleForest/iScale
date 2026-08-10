@@ -6,11 +6,11 @@
 #include <ll/api/command/runtime/RuntimeOverload.h>
 #include <ll/api/event/EventBus.h>
 #include <ll/api/event/server/ServerStartedEvent.h>
+#include <ll/api/memory/Hook.h>
 #include <ll/api/mod/RegisterHelper.h>
 #include <ll/api/service/Bedrock.h>
 #include <mc/deps/core/math/Vec2.h>
 #include <mc/deps/ecs/gamerefs_entity/EntityRegistry.h>
-#include <mc/deps/ecs/strict/StrictEntityContext.h>
 #include <mc/deps/nbt/CompoundTagVariant.h>
 #include <mc/deps/vanilla_components/AABBShapeComponent.h>
 #include <mc/deps/vanilla_components/ActorDataBoundingBoxComponent.h>
@@ -49,11 +49,17 @@
 #include <mc/world/level/BlockSource.h>
 #include <mc/world/level/material/Material.h>
 #include <mc/world/phys/AABB.h>
+// #include <mc/deps/ecs/strict/StrictEntityContext.h>
 
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue()                       = default;
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue(UpdateFromValue const&) = default;
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue&
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::operator=(UpdateFromValue const&) = default;
+class StrictEntityContext {
+public:
+    EntityId mEntity;
+    uint     mRegistryId;
+};
 
 namespace mif::scale {
 
@@ -67,7 +73,7 @@ LL_TYPE_INSTANCE_HOOK(
     &VanillaOffsetSystem::$tick,
     void,
     StrictExecutionContext<
-        Filter<PlayerComponent, InterpolateMovementNeededComponent>,
+        Filter<PlayerComponent, ActorMovementTickNeededComponent>,
         Read<OffsetsComponent, ActorDataFlagComponent, PlayerIsSleepingFlagComponent>,
         Write<VanillaOffsetComponent>,
         AddRemove<IsHorizontalPoseFlagComponent>,
@@ -83,7 +89,17 @@ LL_TYPE_INSTANCE_HOOK(
         auto& vanillaOffsetComponent = registry->get<VanillaOffsetComponent>(entityId);
         auto& offsetsComponent       = registry->get<OffsetsComponent>(entityId);
         auto  scale                  = getScale(registry, entityId);
-        auto cameraOffset = VanillaOffsetSystemUtil::getCameraOffset(
+        auto cameraOffset = [](
+            ActorDataFlagComponent const& actorDataFlag,
+            Optional<PlayerIsSleepingFlagComponent const> const& isSleepingFlag,
+            Optional<IsHorizontalPoseFlagComponent const> const& isHorizontalFlag,
+            float sneakHeight
+        ) {
+            if (isHorizontalFlag.mEnTTStorage) return 0.4f;
+            if (actorDataFlag.getStatusFlag(ActorFlags::Sneaking)) return 1.62001f - sneakHeight;
+            if (isSleepingFlag.mEnTTStorage) return 0.2f;
+            return 1.62001f;
+        }(
             registry->get<ActorDataFlagComponent>(entityId),
             std::bit_cast<Optional<PlayerIsSleepingFlagComponent const>>(
                 Optional<PlayerIsSleepingFlagComponent>{
@@ -124,7 +140,7 @@ LL_TYPE_INSTANCE_HOOK(
 // 数据持久化-加载缩放
 LL_TYPE_INSTANCE_HOOK(
     iScale::ActorLoadHook,
-    HookPriority::Low,
+    HookPriority::Normal,
     Actor,
     &Actor::$load,
     bool,
@@ -143,7 +159,7 @@ LL_TYPE_INSTANCE_HOOK(
 }
 
 // 数据持久化-保存缩放
-LL_TYPE_INSTANCE_HOOK(iScale::ActorSaveHook, HookPriority::Low, Actor, &Actor::save, bool, CompoundTag& entityTag) {
+LL_TYPE_INSTANCE_HOOK(iScale::ActorSaveHook, HookPriority::Normal, Actor, &Actor::save, bool, CompoundTag& entityTag) {
     if (auto result = origin(entityTag); result) {
         entityTag["Scale"] = getScale(*this);
         return true;
@@ -154,7 +170,7 @@ LL_TYPE_INSTANCE_HOOK(iScale::ActorSaveHook, HookPriority::Low, Actor, &Actor::s
 // 数据持久化-初始化时再重新加载一次缩放
 LL_TYPE_INSTANCE_HOOK(
     iScale::ActorInitComponentHook,
-    HookPriority::Low,
+    HookPriority::Normal,
     Actor,
     &Actor::$initializeComponents,
     void,
@@ -224,7 +240,7 @@ LL_TYPE_STATIC_HOOK(
 
     static auto doesIntersect = [](IConstBlockSource const&          blockSource,
                                    AABB const&                       testAABB,
-                                   const GetCollisionShapeInterface* entity,
+                                   GetCollisionShapeInterface const* entity,
                                    std::vector<AABB>&                storage,
                                    bool                              withUnloadedChunks) {
         blockSource.fetchCollisionShapes(storage, testAABB, withUnloadedChunks, entity, nullptr);
@@ -243,7 +259,7 @@ LL_TYPE_STATIC_HOOK(
 
     {
         auto& material             = region.getMaterial(*request.mBreathingPoint);
-        request.mBreathingInAir    = material.mType == MaterialType::Air;
+        request.mBreathingInAir    = material.mType == SharedTypes::v1_26_20::MaterialType::Air;
         request.mBreathingInLiquid = material.mLiquid;
     }
 
@@ -266,14 +282,14 @@ LL_TYPE_STATIC_HOOK(
                                                                   "estComponent@@@@U?$AddRemove@$$V@@U?$GlobalRead@UE"
                                                                   "xternalDataComponent@@ULocalConstBlockSourceFactor"
                                                                   "yComponent@@@@U?$GlobalWrite@$$V@@U?$EntityFactory"
-                                                                  "T@$$V@@@@@@SAPEAPEAXXZ"_sig.resolve())};
+                                                                  "T@$$V@@@@@@SAPEAPEAXXZ"_sym.resolve())()};
         StrictEntityContext mEntity;
-        decltype(&executionContext) mExecutionContext;
+        decltype(&executionContext) mContext;
 
     public:
         CollisionProxy(StrictEntityContext context, decltype(&executionContext) executionContext)
-        : mEntity(std::move(context)),
-          mExecutionContext(executionContext) {}
+        : mEntity(context),
+          mContext(executionContext) {}
 
     public:
         GetCollisionShapeInterface* getCollisionShape() { return reinterpret_cast<GetCollisionShapeInterface*>(this); }
@@ -389,6 +405,7 @@ LL_STATIC_HOOK(
 }
 
 #ifdef LL_PLAT_S
+// 重力
 LL_STATIC_HOOK(
     iScale::TickAirGravityHook,
     HookPriority::Normal,
@@ -403,10 +420,10 @@ LL_STATIC_HOOK(
     auto& registry             = *ll::memory::dAccess<gsl::not_null<EntityRegistry*>>(&modifier, 0)->mRegistry;
     auto  scale                = getScale(registry, context.mEntity);
     auto  hasGlidingOrSwimming = synchedActorData.mValue.test(std::to_underlying(ActorFlags::InScaffolding))
-                             || synchedActorData.mValue.test(std::to_underlying(ActorFlags::OverScaffolding));
-    auto  hasGravity   = synchedActorData.mValue.test(std::to_underlying(ActorFlags::HasGravity));
-    auto  hasExtraFlag = synchedActorData.mValue.test(std::to_underlying(ActorFlags::DescendThroughBlock));
-    auto& component    = registry.get_or_emplace<ApplyGravityComponent>(context.mEntity);
+                              || synchedActorData.mValue.test(std::to_underlying(ActorFlags::OverScaffolding));
+    auto  hasGravity           = synchedActorData.mValue.test(std::to_underlying(ActorFlags::HasGravity));
+    auto  hasExtraFlag         = synchedActorData.mValue.test(std::to_underlying(ActorFlags::DescendThroughBlock));
+    auto& component            = registry.get_or_emplace<ApplyGravityComponent>(context.mEntity);
 
     if (hasGravity && (!hasGlidingOrSwimming || !hasExtraFlag)) {
         if (stateVector.mPosDelta->y < 0.0f && [&]() {
@@ -487,7 +504,7 @@ void iScale::setScale(Actor& entity, float scale) {
         true
     );
     entityContext.getOrAddComponent<ShouldUpdateBoundingBoxRequestComponent>()
-        .mUpdate->template emplace<ShouldUpdateBoundingBoxRequestComponent::UpdateFromDefinition>();
+        .mUpdate->emplace<ShouldUpdateBoundingBoxRequestComponent::UpdateFromDefinition>();
 }
 
 float iScale::getScale(Actor& entity) {

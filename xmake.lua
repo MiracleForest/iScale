@@ -3,8 +3,6 @@ add_rules("plugin.vsxmake.autoupdate")
 add_rules("plugin.compile_commands.autoupdate")
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
-add_repositories("groupmountain-repo https://github.com/GroupMountain/xmake-repo.git")
-add_repositories("miracleforest-repo https://github.com/MiracleForest/xmake-repo.git")
 
 option("target_type")
     set_default("server")
@@ -12,7 +10,7 @@ option("target_type")
     set_values("server", "client")
 option_end()
 
-add_requires("levilamina 26.10.14", { configs = { target_type = "server" } })
+add_requires("levilamina 26.20.7", { configs = { target_type = get_config("target_type") } })
 add_requires("levibuildscript 0.5.0")
 
 if not has_config("vs_runtime") then
@@ -32,6 +30,18 @@ target("iScale")
         "/w44738",
         "/w45204"
     )
+    add_cxflags(
+        "-Wno-microsoft-cast",
+        "-Wno-invalid-offsetof",
+        "-Wno-c++2b-extensions",
+        "-Wno-microsoft-include",
+        "-Wno-overloaded-virtual",
+        "-Wno-ignored-qualifiers",
+        "-Wno-missing-field-initializers",
+        "-Wno-potentially-evaluated-expression",
+        "-Wno-pragma-system-header-outside-header",
+        { tools = { "clang_cl" } }
+    )
     add_defines(
         "NOMINMAX",
         "UNICODE",
@@ -42,6 +52,7 @@ target("iScale")
     add_packages(
         "levilamina"
     )
+    set_toolchains("clang-cl")
     set_exceptions("none")
     set_kind("shared")
     set_languages("cxx20")
@@ -67,10 +78,15 @@ target("iScale")
         import("scripts.generate-manifest", { rootdir = os.projectdir() }).generate_manifest(
             format("%s/manifest.json", output_dir),
             {
-                name = "iScale",
-                entry = "iScale.dll",
+                name = target:name(),
+                entry = path.basename(target:targetfile()),
                 version = import("scripts.get-version-info", { rootdir = os.projectdir() }).get_version_info().version_str,
-                author = "MiracleForest"
+                author = "MiracleForest",
+                platform = get_config("target_type"),
+                description = "A LeviLamina mod for scaling player size.",
+                extraInfo = {
+                    gitHub = "https://github.com/MiracleForest/iScale"
+                }
             }
         )
     end)
