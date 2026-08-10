@@ -18,7 +18,6 @@ end
 
 target("iScale")
     add_cxflags(
-        "/EHa",
         "/utf-8",
         "/W4",
         "/w44265",
@@ -32,6 +31,7 @@ target("iScale")
         "/DELAYLOAD:bedrock_runtime.dll"
     )
     add_cxflags(
+        "/EHs",
         "-Wno-microsoft-cast",
         "-Wno-invalid-offsetof",
         "-Wno-c++2b-extensions",
@@ -41,7 +41,7 @@ target("iScale")
         "-Wno-missing-field-initializers",
         "-Wno-potentially-evaluated-expression",
         "-Wno-pragma-system-header-outside-header",
-        { tools = { "clang-cl" } }
+        { tools = { "clang_cl" } }
     )
     add_defines(
         "NOMINMAX",
