@@ -11,14 +11,12 @@ option("target_type")
 option_end()
 
 add_requires("levilamina 26.20.7", { configs = { target_type = get_config("target_type") } })
-add_requires("levibuildscript 0.5.0")
 
 if not has_config("vs_runtime") then
     set_runtimes("MD")
 end
 
 target("iScale")
-    add_rules("@levibuildscript/linkrule")
     add_cxflags(
         "/EHa",
         "/utf-8",
@@ -30,6 +28,9 @@ target("iScale")
         "/w44738",
         "/w45204"
     )
+    add_shflags(
+        "/DELAYLOAD:bedrock_runtime.dll"
+    )
     add_cxflags(
         "-Wno-microsoft-cast",
         "-Wno-invalid-offsetof",
@@ -40,7 +41,7 @@ target("iScale")
         "-Wno-missing-field-initializers",
         "-Wno-potentially-evaluated-expression",
         "-Wno-pragma-system-header-outside-header",
-        { tools = { "clang_cl" } }
+        { tools = { "clang-cl" } }
     )
     add_defines(
         "NOMINMAX",
@@ -64,6 +65,31 @@ target("iScale")
         set_strip("all")
         set_optimize("aggressive")
     end
+
+    before_link(function(target)
+        import("lib.detect.find_file")
+        import("core.project.config")
+
+        -- 修复莫名其妙的环境变量缺失导致的链接失败
+        os.addenvs(target:pkgenvs())
+
+        local libdir = path.join(config.builddir(), ".prelink", "lib")
+        if os.exists(libdir) then os.rm(libdir) end
+        os.mkdir(libdir)
+
+        local data = assert(find_file("bedrock_runtime_data", {"$(env PATH)"}), "Cannot find bedrock_runtime_data")
+        local link = assert(find_file("prelink.exe", {"$(env PATH)"}), "Cannot find prelink.exe")
+
+        os.runv(link, {
+            string.format("%s-%s-%s", get_config("target_type"), target:plat(), target:arch()),
+            path.join(config.builddir(), ".prelink"),
+            data,
+            table.unpack(target:objectfiles())
+        })
+
+        target:add("linkdirs", libdir)
+        target:add("links", "bedrock_runtime_api")
+    end)
 
     after_build(function (target)
         import("utils.archive")
