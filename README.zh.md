@@ -46,7 +46,7 @@
 1. 进入你的 Minecraft 服务端目录
 2. 执行以下命令：
    ```bash
-   lip install github.com/MiracleForest/iScale#server
+   lip install github.com/MiracleForest/iScale
    ```
 
 #### 手动安装

@@ -1,4 +1,4 @@
-# iScale - 缩放
+# iScale
 
 [简体中文说明](README.zh.md)
 
@@ -46,7 +46,7 @@ Command: `/scale`
 1. Navigate to your Minecraft server directory
 2. Execute the following command:
    ```bash
-   lip install github.com/MiracleForest/iScale#server
+   lip install github.com/MiracleForest/iScale
    ```
 
 #### Manual Installation
