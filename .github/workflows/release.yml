@@ -16,6 +16,11 @@ jobs:
 
       - uses: xmake-io/github-action-setup-xmake@v1
 
+      - name: Setup LLVM
+        uses: ZhongRuoyu/setup-llvm@v0
+        with:
+          llvm-version: 22
+
       - run: |
           xmake repo -u
 

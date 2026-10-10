@@ -16,7 +16,7 @@ A LeviLamina mod for scaling player size.
 
 - Set or query a player's scale
 - Supports both server and client builds
-- Built for LeviLamina `26.20.x`
+- Built for LeviLamina `26.32.x`
 
 ## Usage
 

@@ -16,6 +16,7 @@
 #include <mc/deps/vanilla_components/ActorDataBoundingBoxComponent.h>
 #include <mc/deps/vanilla_components/ActorDataDirtyFlagsComponent.h>
 #include <mc/deps/vanilla_components/ActorDataFlagComponent.h>
+#include <mc/deps/vanilla_components/ActorDataSeatOffsetComponent.h>
 #include <mc/deps/vanilla_components/OffsetsComponent.h>
 #include <mc/deps/vanilla_components/PlayerIsSleepingFlagComponent.h>
 #include <mc/deps/vanilla_components/StateVectorComponent.h>
@@ -35,11 +36,13 @@
 #include <mc/entity/systems/mob_jump_from_ground_system_impl/MobJumpFromGroundSystemImpl.h>
 #include <mc/entity/systems/movement/mob/MobMovementGravity.h>
 #include <mc/entity/utilities/GetAttachPositionUtility.h>
+#include <mc/entity/utilities/GetAttachPositionViews.h>
+#include <mc/deps/ecs/ViewT.h>
+#include <mc/deps/ecs/strict/Include.h>
 #include <mc/entity/utilities/JumpPreventionResult.h>
 #include <mc/entity/utilities/JumpPreventionUtility.h>
 #include <mc/server/commands/CommandOrigin.h>
 #include <mc/server/commands/CommandOutput.h>
-#include <mc/util/VanillaOffsetSystemUtil.h>
 #include <mc/world/Minecraft.h>
 #include <mc/world/actor/ai/control/JumpControl.h>
 #include <mc/world/actor/player/Player.h>
@@ -49,6 +52,7 @@
 #include <mc/world/level/BlockSource.h>
 #include <mc/world/level/material/Material.h>
 #include <mc/world/phys/AABB.h>
+#include <utility>
 // #include <mc/deps/ecs/strict/StrictEntityContext.h>
 
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue()                       = default;
@@ -96,7 +100,7 @@ LL_TYPE_INSTANCE_HOOK(
             float sneakHeight
         ) {
             if (isHorizontalFlag.mEnTTStorage) return 0.4f;
-            if (actorDataFlag.getStatusFlag(ActorFlags::Sneaking)) return 1.62001f - sneakHeight;
+            if (actorDataFlag.mValue.test(std::to_underlying(ActorFlags::Sneaking))) return 1.62001f - sneakHeight;
             if (isSleepingFlag.mEnTTStorage) return 0.2f;
             return 1.62001f;
         }(
@@ -238,23 +242,66 @@ LL_TYPE_STATIC_HOOK(
     }
     auto scale = getScale(registry, context.mEntity);
 
-    static auto doesIntersect = [](IConstBlockSource const&          blockSource,
-                                   AABB const&                       testAABB,
-                                   GetCollisionShapeInterface const* entity,
-                                   std::vector<AABB>&                storage,
-                                   bool                              withUnloadedChunks) {
-        blockSource.fetchCollisionShapes(storage, testAABB, withUnloadedChunks, entity, nullptr);
+    static auto doesIntersect = [](IConstBlockSource const& blockSource,
+                                   AABB const&              testAABB,
+                                   std::vector<AABB>&       storage,
+                                   bool                     withUnloadedChunks) {
+        blockSource.fetchCollisionShapes(storage, testAABB, withUnloadedChunks, nullptr, nullptr);
 
         return std::ranges::any_of(storage, [&](auto& shape) { return shape.intersects(testAABB); });
     };
 
     // clang-format off
-    request.mBreathingPoint = GetAttachPositionUtility::getPassengerAttachPos(
+    // InterpolatedRidingPositionCalculator<InterpolatedRidingPositionCalculationHelper>::getInterpolatedRidingPosition
+    auto ridingPos = reinterpret_cast<Vec3 (*)(
+        StrictEntityContext const&,
+        ViewT<
+            StrictEntityContext,
+            ActorRotationComponent const,
+            RenderRotationComponent const,
+            StateVectorComponent const,
+            ActorDataFlagComponent const,
+            ActorDataSeatOffsetComponent const> const&,
+        ViewT<StrictEntityContext, PassengerComponent const> const&,
+        ViewT<StrictEntityContext, Include<ParrotFlagComponent>> const&,
+        ViewT<StrictEntityContext, Include<VehicleComponent>> const&,
+        ViewT<StrictEntityContext, Include<CamelFlagComponent>, ActorDataFlagComponent const> const&,
+        ViewT<StrictEntityContext, Include<HorseFlagComponent>, StandAnimationComponent const> const&,
+        ViewT<StrictEntityContext, Include<MobFlagComponent>, MobBodyRotationComponent const> const&,
+        float
+    )>(
+        "41 57 41 56 41 55 41 54 56 57 "
+        "55 53 48 81 EC ?? ?? ?? ?? 44 "
+        "0F 29 9C 24 ?? ?? ?? ?? 44 0F "
+        "29 94 24 ?? ?? ?? ?? 44 0F 29 "
+        "8C 24 ?? ?? ?? ?? 44 0F 29 84 "
+        "24 ?? ?? ?? ?? 0F 29 BC 24 ?? "
+        "?? ?? ?? 0F 29 B4 24 ?? ?? ?? "
+        "?? 4D 89 CE"_sig.resolve()
+    )(
+        context,
+        views.mUnkb604d8.as<ViewT<
+            StrictEntityContext,
+            ActorRotationComponent const,
+            RenderRotationComponent const,
+            StateVectorComponent const,
+            ActorDataFlagComponent const,
+            ActorDataSeatOffsetComponent const>>(),
+        views.mUnk9d4038.as<ViewT<StrictEntityContext, PassengerComponent const>>(),
+        views.mUnk35c019.as<ViewT<StrictEntityContext, Include<ParrotFlagComponent>>>(),
+        views.mUnkca2840.as<ViewT<StrictEntityContext, Include<VehicleComponent>>>(),
+        views.mUnk9a49e4.as<ViewT<StrictEntityContext, Include<CamelFlagComponent>, ActorDataFlagComponent const>>(),
+        views.mUnka88592.as<ViewT<StrictEntityContext, Include<HorseFlagComponent>, StandAnimationComponent const>>(),
+        views.mUnk96dd44.as<ViewT<StrictEntityContext, Include<MobFlagComponent>, MobBodyRotationComponent const>>(),
+        0.0f
+    );
+    auto attachPos = GetAttachPositionUtility::getAttachPosition(
         context,
         views,
         SharedTypes::Legacy::ActorLocation::BreathingPoint,
-        0.0f
+        ridingPos
     );
+    request.mBreathingPoint = attachPos.value_or({});
     // clang-format on
 
     {
@@ -262,38 +309,6 @@ LL_TYPE_STATIC_HOOK(
         request.mBreathingInAir    = material.mType == SharedTypes::v1_26_20::MaterialType::Air;
         request.mBreathingInLiquid = material.mLiquid;
     }
-
-    struct CollisionProxy {
-    public:
-        void*               mVTable{reinterpret_cast<void* (*)()>("?$vftable@?$GetCollisionShapeEntityProxy@V?$Strict"
-                                                                  "ExecutionContext@U?$Filter@UCanStandOnSnowFlagComp"
-                                                                  "onent@@UHasLightweightFamilyFlagComponent@@UHorseF"
-                                                                  "lagComponent@@UMobFlagComponent@@UParrotFlagCompon"
-                                                                  "ent@@UVehicleComponent@@UCamelFlagComponent@@UPlay"
-                                                                  "erComponent@@@@U?$Read@UAABBShapeComponent@@UMovem"
-                                                                  "entAbilitiesComponent@@UActorTypeComponent@@UFallD"
-                                                                  "istanceComponent@@UPassengerComponent@@UActorGameT"
-                                                                  "ypeComponent@@UActorDataFlagComponent@@UVehicleCom"
-                                                                  "ponent@@UActorRotationComponent@@UMobBodyRotationC"
-                                                                  "omponent@@URenderRotationComponent@@UStandAnimatio"
-                                                                  "nComponent@@UOffsetsComponent@@UVanillaOffsetCompo"
-                                                                  "nent@@UPassengerRenderingRidingOffsetComponent@@UD"
-                                                                  "imensionTypeComponent@@@@U?$Write@UPlayerInputRequ"
-                                                                  "estComponent@@@@U?$AddRemove@$$V@@U?$GlobalRead@UE"
-                                                                  "xternalDataComponent@@ULocalConstBlockSourceFactor"
-                                                                  "yComponent@@@@U?$GlobalWrite@$$V@@U?$EntityFactory"
-                                                                  "T@$$V@@@@@@SAPEAPEAXXZ"_sym.resolve())()};
-        StrictEntityContext mEntity;
-        decltype(&executionContext) mContext;
-
-    public:
-        CollisionProxy(StrictEntityContext context, decltype(&executionContext) executionContext)
-        : mEntity(context),
-          mContext(executionContext) {}
-
-    public:
-        GetCollisionShapeInterface* getCollisionShape() { return reinterpret_cast<GetCollisionShapeInterface*>(this); }
-    } collisionProxy{context, &executionContext};
 
     std::vector<AABB> blockStorage;
 
@@ -303,7 +318,6 @@ LL_TYPE_STATIC_HOOK(
         if (doesIntersect(
                 region,
                 standingAABB->shrink(Vec3{0.01f}),
-                collisionProxy.getCollisionShape(),
                 blockStorage,
                 false
             )) {
@@ -316,7 +330,6 @@ LL_TYPE_STATIC_HOOK(
         if (doesIntersect(
                 region,
                 sneakingAABB->shrink(Vec3{0.01f}),
-                collisionProxy.getCollisionShape(),
                 blockStorage,
                 false
             )) {
@@ -329,7 +342,6 @@ LL_TYPE_STATIC_HOOK(
         if (doesIntersect(
                 region,
                 crawlingAABB->shrink(Vec3{0.01f}),
-                collisionProxy.getCollisionShape(),
                 blockStorage,
                 false
             )) {
