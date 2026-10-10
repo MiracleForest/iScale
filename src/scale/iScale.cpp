@@ -272,12 +272,11 @@ LL_TYPE_STATIC_HOOK(
     )>(
         "41 57 41 56 41 55 41 54 56 57 "
         "55 53 48 81 EC ?? ?? ?? ?? 44 "
-        "0F 29 9C 24 ?? ?? ?? ?? 44 0F "
-        "29 94 24 ?? ?? ?? ?? 44 0F 29 "
-        "8C 24 ?? ?? ?? ?? 44 0F 29 84 "
-        "24 ?? ?? ?? ?? 0F 29 BC 24 ?? "
-        "?? ?? ?? 0F 29 B4 24 ?? ?? ?? "
-        "?? 4D 89 CE"_sig.resolve()
+        "0F 29 94 24 ?? ?? ?? ?? 44 0F "
+        "29 8C 24 ?? ?? ?? ?? 44 0F 29 "
+        "84 24 ?? ?? ?? ?? 0F 29 BC 24 "
+        "?? ?? ?? ?? 0F 29 B4 24 ?? ?? "
+        "?? ?? 4D 89 CF"_sig.resolve()
     )(
         context,
         views.mUnkb604d8.as<ViewT<
@@ -388,8 +387,8 @@ LL_STATIC_HOOK(
         return 0.42f;
     }();
     auto effectAmplifier = [&]() {
-        auto* mobEFfect = MobEffect::JUMP();
-        if (mobEffectsComponent.mMobEffects->size() > mobEFfect->mId) {
+        auto& mobEFfect = MobEffect::mMobEffects()[MobEffectIds::Jump];
+        if (mobEFfect && mobEffectsComponent.mMobEffects->size() > mobEFfect->mId) {
             auto& mobEffectInstance = (*mobEffectsComponent.mMobEffects)[mobEFfect->mId];
             if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
                 return (static_cast<float>(mobEffectInstance.mAmplifier) + 1.0f) * 0.1f;
@@ -439,8 +438,8 @@ LL_STATIC_HOOK(
 
     if (hasGravity && (!hasGlidingOrSwimming || !hasExtraFlag)) {
         if (stateVector.mPosDelta->y < 0.0f && [&]() {
-            auto* mobEFfect = MobEffect::SLOW_FALLING();
-            if (mobEffects.mMobEffects->size() > mobEFfect->mId) {
+             auto& mobEFfect = MobEffect::mMobEffects()[MobEffectIds::SlowFalling];
+            if (mobEFfect && mobEffects.mMobEffects->size() > mobEFfect->mId) {
                 auto& mobEffectInstance = (*mobEffects.mMobEffects)[mobEFfect->mId];
                 if (mobEffectInstance.mId != MobEffectInstance::NO_EFFECT().mId) {
                     return true;
