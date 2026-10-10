@@ -53,17 +53,12 @@
 #include <mc/world/level/material/Material.h>
 #include <mc/world/phys/AABB.h>
 #include <utility>
-// #include <mc/deps/ecs/strict/StrictEntityContext.h>
+#include <mc/deps/ecs/strict/StrictEntityContext.h>
 
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue()                       = default;
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::UpdateFromValue(UpdateFromValue const&) = default;
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue&
 ShouldUpdateBoundingBoxRequestComponent::UpdateFromValue::operator=(UpdateFromValue const&) = default;
-class StrictEntityContext {
-public:
-    EntityId mEntity;
-    uint     mRegistryId;
-};
 
 namespace mif::scale {
 
@@ -93,35 +88,24 @@ LL_TYPE_INSTANCE_HOOK(
         auto& vanillaOffsetComponent = registry->get<VanillaOffsetComponent>(entityId);
         auto& offsetsComponent       = registry->get<OffsetsComponent>(entityId);
         auto  scale                  = getScale(registry, entityId);
-        auto cameraOffset = [](
-            ActorDataFlagComponent const& actorDataFlag,
-            Optional<PlayerIsSleepingFlagComponent const> const& isSleepingFlag,
-            Optional<IsHorizontalPoseFlagComponent const> const& isHorizontalFlag,
-            float sneakHeight
-        ) {
-            if (isHorizontalFlag.mEnTTStorage) return 0.4f;
-            if (actorDataFlag.mValue.test(std::to_underlying(ActorFlags::Sneaking))) return 1.62001f - sneakHeight;
-            if (isSleepingFlag.mEnTTStorage) return 0.2f;
+        auto cameraOffset = [&](float sneakHeight) {
+            if (registry->any_of<IsHorizontalPoseFlagComponent>(entityId)) return 0.4f;
+            if (registry->get<ActorDataFlagComponent>(entityId).mValue.test(std::to_underlying(ActorFlags::Sneaking))) return 1.62001f - sneakHeight;
+            if (registry->any_of<PlayerIsSleepingFlagComponent>(entityId)) return 0.2f;
             return 1.62001f;
-        }(
-            registry->get<ActorDataFlagComponent>(entityId),
-            std::bit_cast<Optional<PlayerIsSleepingFlagComponent const>>(
-                Optional<PlayerIsSleepingFlagComponent>{
-                    &registry->storage<PlayerIsSleepingFlagComponent>(),
-                    entityId
-                }
-            ),
-            std::bit_cast<Optional<IsHorizontalPoseFlagComponent const>>(
-                Optional<IsHorizontalPoseFlagComponent>{
-                    &registry->storage<IsHorizontalPoseFlagComponent>(),
-                    entityId
-                }
-            ),
-            0.35f
-        );
+        }(0.35f); // 世界版本早于 VanillaGameVersions::SneakingHeightChangeVersion 时 vanilla 传入 0.125f
 
         if (!mIsClientSide) {
-            vanillaOffsetComponent.mCurrentOffset->y = (offsetsComponent.mHeightOffset - cameraOffset) * scale + cameraOffset * (1 - scale);
+            auto& currentOffset  = *vanillaOffsetComponent.mCurrentOffset;
+            auto& previousOffset = *vanillaOffsetComponent.mPreviousOffset;
+
+            // vanilla _serverTick: mCurrentOffset = {0, mHeightOffset - cameraOffset, 0}，且 mPreviousOffset 与 mCurrentOffset 保持一致
+            currentOffset = {
+                0.0f,
+                offsetsComponent.mHeightOffset - cameraOffset * scale, // (h - c) * scale + h * (1 - scale)
+                0.0f
+            };
+            previousOffset = currentOffset;
         }
 #if defined (LL_PLAT_C)
         else {
@@ -201,8 +185,8 @@ LL_TYPE_STATIC_HOOK(
     PlayerInputRequestComponent& request,
     StrictExecutionContext<
         Filter<
-            CanStandOnSnowFlagComponent,
-            HasLightweightFamilyFlagComponent,
+            CanStandOnPowderSnowComponent,
+            CanStandOnPowderSnowFromEquipmentComponent,
             HorseFlagComponent,
             MobFlagComponent,
             ParrotFlagComponent,
@@ -253,6 +237,7 @@ LL_TYPE_STATIC_HOOK(
 
     // clang-format off
     // InterpolatedRidingPositionCalculator<InterpolatedRidingPositionCalculationHelper>::getInterpolatedRidingPosition
+    // symbol: ?getInterpolatedRidingPosition@?$InterpolatedRidingPositionCalculator@UInterpolatedRidingPositionCalculationHelper@@@@SA?AVVec3@@AEBVStrictEntityContext@@AEBV?$ViewT@VStrictEntityContext@@$$CBUActorRotationComponent@@$$CBURenderRotationComponent@@$$CBUStateVectorComponent@@$$CBUActorDataFlagComponent@@$$CBUActorDataSeatOffsetComponent@@@@AEBV?$ViewT@VStrictEntityContext@@$$CBUPassengerComponent@@@@AEBV?$ViewT@VStrictEntityContext@@U?$Include@UParrotFlagComponent@@@@@@AEBV?$ViewT@VStrictEntityContext@@U?$Include@UVehicleComponent@@@@@@AEBV?$ViewT@VStrictEntityContext@@U?$Include@UCamelFlagComponent@@@@$$CBUActorDataFlagComponent@@@@AEBV?$ViewT@VStrictEntityContext@@U?$Include@UHorseFlagComponent@@@@$$CBUStandAnimationComponent@@@@AEBV?$ViewT@VStrictEntityContext@@U?$Include@UMobFlagComponent@@@@$$CBUMobBodyRotationComponent@@@@M@Z
     auto ridingPos = reinterpret_cast<Vec3 (*)(
         StrictEntityContext const&,
         ViewT<
@@ -272,11 +257,12 @@ LL_TYPE_STATIC_HOOK(
     )>(
         "41 57 41 56 41 55 41 54 56 57 "
         "55 53 48 81 EC ?? ?? ?? ?? 44 "
-        "0F 29 94 24 ?? ?? ?? ?? 44 0F "
-        "29 8C 24 ?? ?? ?? ?? 44 0F 29 "
-        "84 24 ?? ?? ?? ?? 0F 29 BC 24 "
-        "?? ?? ?? ?? 0F 29 B4 24 ?? ?? "
-        "?? ?? 4D 89 CF"_sig.resolve()
+        "0F 29 9C 24 ?? ?? ?? ?? 44 0F "
+        "29 94 24 ?? ?? ?? ?? 44 0F 29 "
+        "8C 24 ?? ?? ?? ?? 44 0F 29 84 "
+        "24 ?? ?? ?? ?? 0F 29 BC 24 ?? "
+        "?? ?? ?? 0F 29 B4 24 ?? ?? ?? "
+        "?? 4D 89 CE"_sig.resolve()
     )(
         context,
         views.mUnkb604d8.as<ViewT<
